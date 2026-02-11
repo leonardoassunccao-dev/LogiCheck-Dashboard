@@ -1,0 +1,5 @@
+{
+  "name": "LogiCheck Dashboard",
+  "description": "Offline-first PWA for logistics management, E-track dashboards, and driver issue tracking.",
+  "requestFramePermissions": []
+}
