@@ -1,4 +1,4 @@
-import React, { Component, ErrorInfo, ReactNode } from 'react';
+import React, { ErrorInfo, ReactNode } from 'react';
 import ReactDOM from 'react-dom/client';
 import App from './App';
 
@@ -11,15 +11,16 @@ interface ErrorBoundaryState {
   error: Error | null;
 }
 
-// Fixed ErrorBoundary by using Component from 'react' and standard generic application.
-// This resolves TypeScript errors where 'props' or 'state' might not be properly inherited.
-class ErrorBoundary extends Component<ErrorBoundaryProps, ErrorBoundaryState> {
+// Fixed ErrorBoundary by explicitly extending React.Component and declaring the state property
+class ErrorBoundary extends React.Component<ErrorBoundaryProps, ErrorBoundaryState> {
+  // Declare the state property explicitly to resolve "Property 'state' does not exist" errors
+  public state: ErrorBoundaryState = {
+    hasError: false,
+    error: null
+  };
+
   constructor(props: ErrorBoundaryProps) {
     super(props);
-    this.state = {
-      hasError: false,
-      error: null
-    };
   }
 
   public static getDerivedStateFromError(error: Error): ErrorBoundaryState {
@@ -31,24 +32,29 @@ class ErrorBoundary extends Component<ErrorBoundaryProps, ErrorBoundaryState> {
   }
 
   public render() {
+    // Accessing this.state is now correctly typed
     if (this.state.hasError) {
       return (
-        <div style={{ padding: '40px', fontFamily: 'sans-serif', color: '#800020' }}>
-          <h1>Algo deu errado.</h1>
-          <p>A aplicação encontrou um erro inesperado.</p>
-          <pre style={{ backgroundColor: '#f0f0f0', padding: '10px', overflow: 'auto' }}>
+        <div style={{ padding: '40px', fontFamily: 'sans-serif', color: '#800020', textAlign: 'center' }}>
+          <h1 style={{ fontSize: '24px', fontWeight: 'black' }}>Algo deu errado.</h1>
+          <p style={{ margin: '10px 0', opacity: 0.7 }}>A aplicação encontrou um erro inesperado e não pôde continuar.</p>
+          <pre style={{ backgroundColor: '#f9f9f9', padding: '20px', overflow: 'auto', borderRadius: '12px', textAlign: 'left', border: '1px solid #eee', fontSize: '11px' }}>
             {this.state.error?.toString()}
           </pre>
           <button 
-            onClick={() => window.location.reload()}
-            style={{ marginTop: '20px', padding: '10px 20px', backgroundColor: '#800020', color: 'white', border: 'none', borderRadius: '5px', cursor: 'pointer' }}
+            onClick={() => {
+              localStorage.clear();
+              window.location.reload();
+            }}
+            style={{ marginTop: '20px', padding: '12px 30px', backgroundColor: '#955251', color: 'white', border: 'none', borderRadius: '10px', cursor: 'pointer', fontWeight: 'bold' }}
           >
-            Recarregar Página
+            Resetar App e Recarregar
           </button>
         </div>
       );
     }
 
+    // Accessing this.props is now correctly typed through React.Component inheritance
     return this.props.children;
   }
 }
@@ -67,30 +73,8 @@ root.render(
   </React.StrictMode>
 );
 
-// Basic Service Worker Registration for PWA support
 if ('serviceWorker' in navigator) {
   window.addEventListener('load', () => {
-    navigator.serviceWorker.register('/service-worker.js')
-      .then(registration => {
-        // Force update logic if needed
-        registration.onupdatefound = () => {
-          const installingWorker = registration.installing;
-          if (installingWorker == null) {
-            return;
-          }
-          installingWorker.onstatechange = () => {
-            if (installingWorker.state === 'installed') {
-              if (navigator.serviceWorker.controller) {
-                console.log('New content is available; please refresh.');
-              } else {
-                console.log('Content is cached for offline use.');
-              }
-            }
-          };
-        };
-      })
-      .catch(registrationError => {
-        console.log('SW registration failed: ', registrationError);
-      });
+    navigator.serviceWorker.register('/service-worker.js').catch(err => console.log('SW fail: ', err));
   });
 }

@@ -20,7 +20,6 @@ export interface DriverIssue {
 }
 
 export type ManifestStatus = 'PENDENTE' | 'CONFERIDO' | 'DIVERGENTE' | 'AUSENTE';
-export type PriorityLevel = 'ALTA' | 'MEDIA' | 'BAIXA';
 export type TransferPendencyType = 'OK' | 'ORIGEM' | 'DESTINO' | 'DIVERGENCIA';
 
 export interface OperationalManifest {
@@ -42,8 +41,8 @@ export interface OperationalManifest {
   ultimoUpdate: string;
 }
 
-export interface TransferCycle {
-  id: string; // id_transferencia (romaneio)
+export interface RadarTransferencia {
+  id_transferencia: string;
   origem_filial: string;
   destino_filial: string;
   created_at: string;
@@ -61,14 +60,12 @@ export interface TransferCycle {
 
 export interface FilialOperationalStats {
   filial: string;
-  total: number;
-  concluidas: number;
-  pendentes: number;
-  pOrigem: number;
-  pDestino: number;
-  pDivergencia: number;
-  agingMedio: number;
-  maiorAging: number;
+  total_pendentes: number;
+  origem_count: number;
+  destino_count: number;
+  divergencia_count: number;
+  aging_medio: number;
+  maior_aging: number;
 }
 
 export interface ImportBatch {

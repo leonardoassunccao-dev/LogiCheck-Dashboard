@@ -1,36 +1,36 @@
-import { OperationalManifest, TransferCycle, TransferPendencyType, FilialOperationalStats, ETrackRecord, LogiCheckScore, OperationalInsight, ManifestStatus } from '../types';
+import { OperationalManifest, RadarTransferencia, TransferPendencyType, FilialOperationalStats, ETrackRecord, LogiCheckScore, OperationalInsight, ManifestStatus } from '../types';
 
 export const AnalysisService = {
   /**
    * BASE ÚNICA RADARDATA
-   * Retorna 1 linha por Transferência (DISTINCT id_transferencia + origem_filial)
+   * Retorna 1 linha por transferência real (deduplicada por id + origem)
    */
-  getTransferCycles: (manifests: OperationalManifest[]): TransferCycle[] => {
+  getRadarData: (manifests: OperationalManifest[]): RadarTransferencia[] => {
     const cyclesMap = new Map<string, any>();
     const now = new Date();
 
-    // Agregação por id_transferencia + origem_filial
     manifests.forEach(m => {
+      // Chave única: Filial Origem + Número do Romaneio
       const cycleKey = `${m.filialOrigem}_${m.romaneio}`;
+      
       if (!cyclesMap.has(cycleKey)) {
         cyclesMap.set(cycleKey, {
-          romaneio: m.romaneio,
-          filialOrigem: m.filialOrigem,
-          filialDestino: m.filialDestino,
-          dataCriacao: m.dataIncRomaneio,
+          id: m.romaneio,
+          origem: m.filialOrigem,
+          destino: m.filialDestino,
+          created: m.dataIncRomaneio,
           motorista: m.motorista,
           veiculo: m.veiculo,
           carregamento: null as OperationalManifest | null,
           descarga: null as OperationalManifest | null,
-          totalNfs: m.totalNfs,
-          totalVolume: m.totalVolume
+          nfs: m.totalNfs,
+          vol: m.totalVolume
         });
       }
 
       const cycle = cyclesMap.get(cycleKey)!;
       const tipo = (m.tipo || '').toUpperCase();
       
-      // Mapeia Carga vs Descarga
       if (tipo.includes('CARREGAMENTO') || tipo.includes('SAIDA') || tipo.includes('SAÍDA')) {
         cycle.carregamento = m;
       } else if (tipo.includes('DESCARGA') || tipo.includes('ENTRADA') || tipo.includes('CHEGADA')) {
@@ -41,20 +41,17 @@ export const AnalysisService = {
     });
 
     return Array.from(cyclesMap.values()).map(cycle => {
-      const car = cycle.carregamento;
-      const des = cycle.descarga;
-      const carStatus: ManifestStatus = car?.status || 'AUSENTE';
-      const desStatus: ManifestStatus = des?.status || 'AUSENTE';
-      
-      const start = new Date(cycle.dataCriacao);
+      const carStatus: ManifestStatus = cycle.carregamento?.status || 'AUSENTE';
+      const desStatus: ManifestStatus = cycle.descarga?.status || 'AUSENTE';
+      const start = new Date(cycle.created);
       const aging_horas = Math.floor((now.getTime() - start.getTime()) / (1000 * 60 * 60));
-
+      
       const divergencia_ativa = carStatus === 'DIVERGENTE' || desStatus === 'DIVERGENTE';
       
-      // REGRAS DE TIPO DE PENDÊNCIA (HIERARQUIA)
       let tipo_pendencia: TransferPendencyType = 'OK';
       let pendente = true;
 
+      // REGRAS HIERÁRQUICAS
       if (divergencia_ativa) {
         tipo_pendencia = 'DIVERGENCIA';
       } else if (carStatus !== 'CONFERIDO') {
@@ -67,10 +64,10 @@ export const AnalysisService = {
       }
 
       return {
-        id: cycle.romaneio,
-        origem_filial: cycle.filialOrigem,
-        destino_filial: cycle.filialDestino,
-        created_at: cycle.dataCriacao,
+        id_transferencia: cycle.id,
+        origem_filial: cycle.origem,
+        destino_filial: cycle.destino,
+        created_at: cycle.created,
         motorista: cycle.motorista,
         veiculo: cycle.veiculo,
         carga_status: carStatus,
@@ -79,80 +76,72 @@ export const AnalysisService = {
         tipo_pendencia,
         pendente,
         aging_horas,
-        totalNfs: cycle.totalNfs,
-        totalVolume: cycle.totalVolume
+        totalNfs: cycle.nfs,
+        totalVolume: cycle.vol
       };
     });
   },
 
-  /**
-   * Estatísticas agrupadas por Filial de Origem
-   */
-  getFilialStats: (cycles: TransferCycle[]): FilialOperationalStats[] => {
+  getFilialStats: (radarData: RadarTransferencia[]): FilialOperationalStats[] => {
     const map = new Map<string, any>();
-
-    cycles.forEach(c => {
+    
+    radarData.filter(c => c.pendente).forEach(c => {
       const f = c.origem_filial;
       if (!map.has(f)) {
         map.set(f, { 
-          filial: f, total: 0, concluidas: 0, pendentes: 0,
-          pOrigem: 0, pDestino: 0, pDivergencia: 0,
-          agingSum: 0, maiorAging: 0 
+          filial: f, total: 0, o: 0, d: 0, div: 0, agingSum: 0, maxA: 0 
         });
       }
       const s = map.get(f)!;
       s.total++;
-      if (!c.pendente) {
-        s.concluidas++;
-      } else {
-        s.pendentes++;
-        s.agingSum += c.aging_horas;
-        if (c.aging_horas > s.maiorAging) s.maiorAging = c.aging_horas;
-        
-        if (c.tipo_pendencia === 'ORIGEM') s.pOrigem++;
-        if (c.tipo_pendencia === 'DESTINO') s.pDestino++;
-        if (c.tipo_pendencia === 'DIVERGENCIA') s.pDivergencia++;
-      }
+      s.agingSum += c.aging_horas;
+      if (c.aging_horas > s.maxA) s.maxA = c.aging_horas;
+      
+      if (c.tipo_pendencia === 'ORIGEM') s.o++;
+      if (c.tipo_pendencia === 'DESTINO') s.d++;
+      if (c.tipo_pendencia === 'DIVERGENCIA') s.div++;
     });
 
     return Array.from(map.values()).map(s => ({
       filial: s.filial,
-      total: s.total,
-      concluidas: s.concluidas,
-      pendentes: s.pendentes,
-      pOrigem: s.pOrigem,
-      pDestino: s.pDestino,
-      pDivergencia: s.pDivergencia,
-      agingMedio: s.pendentes > 0 ? Math.round(s.agingSum / s.pendentes) : 0,
-      maiorAging: s.maiorAging
-    })).sort((a, b) => b.pendentes - a.pendentes);
+      total_pendentes: s.total,
+      origem_count: s.o,
+      destino_count: s.d,
+      divergencia_count: s.div,
+      aging_medio: Math.round(s.agingSum / s.total),
+      maior_aging: s.maxA
+    })).sort((a, b) => b.total_pendentes - a.total_pendentes);
   },
 
-  getGeneralOperationalStatus: (cycles: TransferCycle[]) => {
-    const pendingCount = cycles.filter(c => c.pendente).length;
-    const total = cycles.length;
-    if (total === 0) return { label: 'SEM DADOS', color: 'bg-gray-400', desc: 'Aguardando importação' };
-
-    const rate = (pendingCount / total) * 100;
-    if (rate > 30) return { label: 'CRÍTICO', color: 'bg-red-600', desc: 'Alto volume de pendências na rede' };
-    if (rate > 15) return { label: 'ATENÇÃO', color: 'bg-yellow-500', desc: 'Pendências acima da meta' };
-    return { label: 'ESTÁVEL', color: 'bg-green-600', desc: 'Operação fluindo normalmente' };
+  getGeneralOperationalStatus: (radarData: RadarTransferencia[]) => {
+    const pendentes = radarData.filter(c => c.pendente).length;
+    const total = radarData.length;
+    if (total === 0) return { label: 'SEM DADOS', color: 'bg-gray-400', desc: 'Importe os romaneios' };
+    
+    const rate = (pendentes / total) * 100;
+    if (rate > 35) return { label: 'CRÍTICO', color: 'bg-red-600', desc: 'Volume de pendências alarmante' };
+    if (rate > 20) return { label: 'ATENÇÃO', color: 'bg-yellow-500', desc: 'Fluxo acima da capacidade' };
+    return { label: 'ESTÁVEL', color: 'bg-green-600', desc: 'Operação fluindo perfeitamente' };
   },
 
   calculateScore: (data: ETrackRecord[], manifests: OperationalManifest[]): LogiCheckScore => {
-    const cycles = AnalysisService.getTransferCycles(manifests);
-    if (cycles.length === 0) return { score: 0, label: 'Sem Dados', color: 'text-gray-400' };
-    const concluidas = cycles.filter(c => !c.pendente).length;
-    const rate = (concluidas / cycles.length) * 100;
-    return { score: Math.round(rate), label: rate > 80 ? 'Saudável' : 'Atenção', color: rate > 80 ? 'text-green-600' : 'text-yellow-600' };
+    const radar = AnalysisService.getRadarData(manifests);
+    if (radar.length === 0) return { score: 0, label: 'Sem Dados', color: 'text-gray-400' };
+    const concluidas = radar.filter(c => !c.pendente).length;
+    const rate = (concluidas / radar.length) * 100;
+    return { 
+      score: Math.round(rate), 
+      label: rate > 80 ? 'Excelente' : rate > 60 ? 'Regular' : 'Crítico',
+      color: rate > 80 ? 'text-green-600' : rate > 60 ? 'text-yellow-600' : 'text-red-600'
+    };
   },
 
   getInsights: (data: ETrackRecord[]): OperationalInsight[] => [],
   getComparison: (data: ETrackRecord[]) => ({ diff: 0, trend: 'stable' }),
   getRadarAlert: (manifests: OperationalManifest[]) => {
-    const cycles = AnalysisService.getTransferCycles(manifests);
-    const pending = cycles.filter(c => c.pendente).length;
-    return { severityLevel: pending > 10 ? 2 : 0, count: pending, oldest: 0, statusText: `${pending} pendentes`, styleClass: '', iconColor: '' };
+    const radar = AnalysisService.getRadarData(manifests);
+    const pendentes = radar.filter(c => c.pendente).length;
+    return { severityLevel: pendentes > 15 ? 2 : 0, count: pendentes, oldest: 0, statusText: `${pendentes} pendentes`, styleClass: '', iconColor: '' };
   },
-  getGeneralStatus: (score: number, radarSeverity: number) => ({ status: 'OK', color: 'bg-green-600', textColor: 'text-white', description: '' })
+  getGeneralStatus: (score: number, radarSeverity: number) => ({ status: 'OK', color: 'bg-green-600', textColor: 'text-white', description: 'Monitoramento ativo' })
 };
