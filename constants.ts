@@ -1,4 +1,4 @@
-import { LucideIcon, LayoutDashboard, AlertTriangle, Database } from 'lucide-react';
+import { LucideIcon, LayoutDashboard, AlertTriangle, Database, FileSpreadsheet } from 'lucide-react';
 import { Tab } from './types';
 
 // Keys now act as prefixes. The Service will append _{workspaceId}
@@ -8,12 +8,14 @@ export const STORAGE_KEYS = {
   
   // Dynamic Keys (Prefixes)
   IMPORTED_DATA_PREFIX: 'logicheck_data',
+  OPERATIONAL_MANIFESTS_PREFIX: 'logicheck_manifests', // New Key
   IMPORT_HISTORY_PREFIX: 'logicheck_history',
   DRIVER_ISSUES_PREFIX: 'logicheck_issues',
 };
 
 export const TABS: { id: Tab; label: string; icon: LucideIcon }[] = [
   { id: 'dashboard', label: 'Dashboard', icon: LayoutDashboard },
+  { id: 'romaneios', label: 'Radar Operacional', icon: FileSpreadsheet },
   { id: 'pendencias', label: 'Pendências', icon: AlertTriangle },
   { id: 'dados', label: 'Dados (Import)', icon: Database },
 ];

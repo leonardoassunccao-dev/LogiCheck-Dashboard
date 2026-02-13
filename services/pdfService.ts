@@ -1,6 +1,6 @@
 import jsPDF from 'jspdf';
 import autoTable from 'jspdf-autotable';
-import { ETrackRecord, DriverIssue } from '../types';
+import { ETrackRecord, DriverIssue, OperationalManifest } from '../types';
 
 const MARSALA = '#955251';
 const GRAY = '#4B5563';
@@ -256,6 +256,137 @@ export const PDFService = {
 
     const dateStr = new Date().toISOString().split('T')[0];
     doc.save(`LogiCheck_Pendencias_${dateStr}.pdf`);
+  },
+
+  generateRomaneiosPDF: (manifests: OperationalManifest[]) => {
+    const doc = new jsPDF();
+
+    // --- Calculations ---
+    const total = manifests.length;
+    const pending = manifests.filter(m => m.status === 'PENDENTE');
+    const done = manifests.filter(m => m.status === 'CONFERIDO');
+    const oldestPendingDays = pending.length > 0 ? Math.max(...pending.map(m => m.diasEmAberto)) : 0;
+    
+    // Pending by Filial
+    const filialMap: Record<string, number> = {};
+    pending.forEach(m => {
+      const filial = m.filialOrigem || 'N/A';
+      filialMap[filial] = (filialMap[filial] || 0) + 1;
+    });
+    const byFilial = Object.entries(filialMap)
+      .sort((a, b) => b[1] - a[1])
+      .map(entry => [entry[0], entry[1].toString()]);
+
+    // Aging Buckets
+    const agingMap = {
+      '0-1 dias': 0,
+      '2-3 dias': 0,
+      '4-7 dias': 0,
+      '8+ dias': 0
+    };
+    pending.forEach(m => {
+      const days = m.diasEmAberto;
+      if (days <= 1) agingMap['0-1 dias']++;
+      else if (days <= 3) agingMap['2-3 dias']++;
+      else if (days <= 7) agingMap['4-7 dias']++;
+      else agingMap['8+ dias']++;
+    });
+    const byAging = Object.entries(agingMap).map(entry => [entry[0], entry[1].toString()]);
+
+    // Critical List (4+ days)
+    const criticalList = pending
+      .filter(m => m.diasEmAberto >= 4)
+      .sort((a, b) => b.diasEmAberto - a.diasEmAberto)
+      .map(m => [
+        m.diasEmAberto.toString() + ' dias',
+        m.filialOrigem,
+        m.romaneio,
+        m.motorista.substring(0, 20), // Truncate name
+        m.totalNfs.toString(),
+        m.totalVolume.toLocaleString('pt-BR', {maximumFractionDigits: 1})
+      ]);
+
+    // --- PDF Generation ---
+
+    addHeader(doc, 'Relatório de Romaneios', 'Controle Operacional e Pendências');
+
+    // 1. Summary Table
+    autoTable(doc, {
+      startY: 35,
+      head: [['Total Romaneios', 'Pendentes', 'Conferidos', 'Pendência + Antiga']],
+      body: [[
+        total.toString(),
+        pending.length.toString(),
+        done.length.toString(),
+        `${oldestPendingDays} dias`
+      ]],
+      theme: 'grid',
+      headStyles: { fillColor: [240, 240, 240], textColor: [50, 50, 50], fontStyle: 'bold' },
+      styles: { halign: 'center', fontSize: 12 }
+    });
+
+    let finalY = (doc as any).lastAutoTable.finalY + 12;
+
+    // 2. Side by Side: Filial & Aging
+    doc.setFontSize(11);
+    doc.setTextColor(MARSALA);
+    
+    // Left: Filial
+    doc.text('Pendências por Filial', 14, finalY);
+    autoTable(doc, {
+      startY: finalY + 2,
+      head: [['Filial', 'Qtd']],
+      body: byFilial,
+      theme: 'striped',
+      headStyles: { fillColor: MARSALA },
+      tableWidth: 85,
+      margin: { left: 14 }
+    });
+    
+    const filialY = (doc as any).lastAutoTable.finalY;
+
+    // Right: Aging
+    doc.text('Aging (Dias em Aberto)', 110, finalY);
+    autoTable(doc, {
+      startY: finalY + 2,
+      head: [['Período', 'Qtd']],
+      body: byAging,
+      theme: 'striped',
+      headStyles: { fillColor: [31, 41, 55] },
+      tableWidth: 85,
+      margin: { left: 110 }
+    });
+
+    const agingY = (doc as any).lastAutoTable.finalY;
+    finalY = Math.max(filialY, agingY) + 12;
+
+    // 3. Critical List
+    doc.setFontSize(12);
+    doc.setTextColor(MARSALA);
+    doc.text(`Romaneios Críticos (+4 dias em aberto) - ${criticalList.length} itens`, 14, finalY);
+
+    if (criticalList.length > 0) {
+      autoTable(doc, {
+        startY: finalY + 3,
+        head: [['Dias', 'Filial', 'Romaneio', 'Motorista', 'NFs', 'Vol']],
+        body: criticalList,
+        theme: 'grid',
+        headStyles: { fillColor: [220, 38, 38], textColor: 255 }, // Red Header for critical
+        styles: { fontSize: 9 },
+        columnStyles: {
+          0: { fontStyle: 'bold', textColor: [220, 38, 38] }
+        }
+      });
+    } else {
+      doc.setFontSize(10);
+      doc.setTextColor(GRAY);
+      doc.text('Nenhum romaneio crítico encontrado.', 14, finalY + 10);
+    }
+
+    addFooter(doc);
+
+    const dateStr = new Date().toISOString().split('T')[0];
+    doc.save(`LogiCheck_Romaneios_${dateStr}.pdf`);
   },
 
   generateDrillDownPDF: (title: string, head: string[][], body: string[][]) => {

@@ -1,27 +1,108 @@
-import { ETrackRecord, OperationalInsight, LogiCheckScore } from '../types';
+import { ETrackRecord, OperationalInsight, LogiCheckScore, OperationalManifest } from '../types';
 
 export const AnalysisService = {
-  calculateScore: (data: ETrackRecord[]): LogiCheckScore => {
-    if (data.length === 0) return { score: 0, label: 'Sem Dados', color: 'text-gray-400' };
+  /**
+   * CÁLCULO DE SAÚDE OPERACIONAL (Índice LogiCheck)
+   * Fórmula: (Pilar 1 + Pilar 2 + Pilar 3) / 3
+   * 
+   * Pilar 1: Equilíbrio de Conferência (0-100) -> Baseado no desvio padrão de produtividade entre conferentes.
+   * Pilar 2: Estabilidade de Volume (0-100) -> Baseado na regularidade do volume diário (CV - Coeficiente de Variação).
+   * Pilar 3: Controle de Pendências (0-100) -> Baseado na quantidade e aging (tempo) dos romaneios pendentes.
+   */
+  calculateScore: (data: ETrackRecord[], manifests: OperationalManifest[]): LogiCheckScore => {
+    // Se não há dados gerais E não há manifestos, score zero
+    if (data.length === 0 && manifests.length === 0) {
+        return { score: 0, label: 'Sem Dados', color: 'text-gray-400' };
+    }
 
-    // Critério 1: Equilíbrio de Conferentes (Desvio Padrão)
-    const conferenteMap: Record<string, number> = {};
-    data.forEach(d => conferenteMap[d.conferidoPor] = (conferenteMap[d.conferidoPor] || 0) + 1);
-    const volumes = Object.values(conferenteMap);
-    const avg = volumes.reduce((a, b) => a + b, 0) / volumes.length;
-    const variance = volumes.reduce((a, b) => a + Math.pow(b - avg, 2), 0) / volumes.length;
-    const balanceFactor = Math.max(0, 100 - (Math.sqrt(variance) / avg) * 50);
+    // --- PILAR 1: Equilíbrio de Conferência ---
+    let balanceScore = 100;
+    if (data.length > 0) {
+        const conferenteMap: Record<string, number> = {};
+        data.forEach(d => {
+            if (d.conferidoPor && d.conferidoPor !== 'N/A') {
+                conferenteMap[d.conferidoPor] = (conferenteMap[d.conferidoPor] || 0) + 1;
+            }
+        });
+        const volumes = Object.values(conferenteMap);
+        if (volumes.length > 0) {
+            const avg = volumes.reduce((a, b) => a + b, 0) / volumes.length;
+            const variance = volumes.reduce((a, b) => a + Math.pow(b - avg, 2), 0) / volumes.length;
+            // Penaliza desvios altos. CV = 1.0 (100% variação) gera score 50. CV = 0 gera score 100.
+            balanceScore = Math.max(0, Math.min(100, 100 - (Math.sqrt(variance) / (avg || 1)) * 50));
+        } else {
+            balanceScore = 0; // Tem dados mas ninguém conferiu
+        }
+    }
 
-    // Critério 2: Volumetria
-    const totalNfs = data.reduce((acc, curr) => acc + curr.nfColetadas, 0);
-    const volumeFactor = Math.min(100, (totalNfs / (data.length * 10)) * 100);
+    // --- PILAR 2: Estabilidade de Volume ---
+    let volumeStabilityScore = 100;
+    if (data.length > 0) {
+        const dateMap: Record<string, number> = {};
+        data.forEach(d => {
+            const date = new Date(d.conferenciaData).toLocaleDateString();
+            dateMap[date] = (dateMap[date] || 0) + d.nfColetadas;
+        });
+        const dailyVolumes = Object.values(dateMap);
+        if (dailyVolumes.length > 1) {
+            const avgVol = dailyVolumes.reduce((a, b) => a + b, 0) / dailyVolumes.length;
+            const volVariance = dailyVolumes.reduce((a, b) => a + Math.pow(b - avgVol, 2), 0) / dailyVolumes.length;
+            const stdDev = Math.sqrt(volVariance);
+            // Coeficiente de Variação (CV). Se variar 20% (0.2), perde 20 pontos.
+            const cv = stdDev / (avgVol || 1);
+            volumeStabilityScore = Math.max(0, Math.min(100, 100 - (cv * 100)));
+        } else {
+            // Se só tem 1 dia de dados, consideramos estável (100) ou neutro
+            volumeStabilityScore = 100; 
+        }
+    } else {
+        volumeStabilityScore = 0;
+    }
 
-    const score = Math.round((balanceFactor * 0.6) + (volumeFactor * 0.4));
+    // --- PILAR 3: Controle de Pendências ---
+    let pendingScore = 100;
+    if (manifests.length > 0) {
+        const pending = manifests.filter(m => m.status === 'PENDENTE');
+        const count = pending.length;
+        const maxAging = count > 0 ? Math.max(...pending.map(m => m.diasEmAberto)) : 0;
+        
+        // Fórmula de penalidade:
+        // - Cada pendência: -2 pontos
+        // - Cada dia de atraso do item mais velho: -5 pontos
+        const penalty = (count * 2) + (maxAging * 5);
+        pendingScore = Math.max(0, 100 - penalty);
+    } else if (data.length > 0) {
+        // Se tem dados importados mas não tem manifestos carregados, 
+        // assumimos neutro ou ignoramos este pilar (média dos outros 2)? 
+        // Para simplificar, mantemos 100 se não houver manifesto pendente acusado.
+        pendingScore = 100; 
+    } else {
+        pendingScore = 0;
+    }
 
-    if (score > 80) return { score, label: 'Operação Excelente', color: 'text-green-500' };
-    if (score > 60) return { score, label: 'Operação Estável', color: 'text-blue-500' };
-    if (score > 40) return { score, label: 'Atenção Necessária', color: 'text-yellow-500' };
-    return { score, label: 'Crítico', color: 'text-red-500' };
+    // --- CÁLCULO FINAL ---
+    const finalScore = Math.round((balanceScore + volumeStabilityScore + pendingScore) / 3);
+
+    // --- CLASSIFICAÇÃO (Cores solicitadas) ---
+    // 80–100 → verde
+    // 60–79 → amarelo
+    // 0–59 → vermelho
+    
+    let label = '';
+    let color = '';
+
+    if (finalScore >= 80) {
+        label = 'Operação Saudável';
+        color = 'text-green-600 dark:text-green-500';
+    } else if (finalScore >= 60) {
+        label = 'Atenção Necessária';
+        color = 'text-yellow-600 dark:text-yellow-500';
+    } else {
+        label = 'Crítico / Instável';
+        color = 'text-red-600 dark:text-red-500';
+    }
+
+    return { score: finalScore, label, color };
   },
 
   getInsights: (data: ETrackRecord[]): OperationalInsight[] => {
@@ -83,6 +164,87 @@ export const AnalysisService = {
     return {
       diff: Math.abs(Math.round(diff)),
       trend: diff > 0 ? 'up' : diff < 0 ? 'down' : 'stable'
+    };
+  },
+
+  getRadarAlert: (manifests: OperationalManifest[]) => {
+    const pending = manifests.filter(m => m.status === 'PENDENTE');
+    const count = pending.length;
+    // Pega o maior aging dos pendentes
+    const oldest = count > 0 ? Math.max(...pending.map(m => m.diasEmAberto)) : 0;
+
+    // Definição de Nível Base (0 a 3)
+    let severityLevel: 0 | 1 | 2 | 3 = 0; // 0: Neutral, 1: Low, 2: Med, 3: High
+
+    if (count >= 16) severityLevel = 3;
+    else if (count >= 6) severityLevel = 2;
+    else if (count >= 1) severityLevel = 1;
+
+    // Promoção de Severidade por Aging (Se +4 dias, sobe um nível, limitado a 3)
+    if (count > 0 && oldest >= 4) {
+       severityLevel = Math.min(severityLevel + 1, 3) as any;
+    }
+
+    // Definição de Textos e Estilos
+    let statusText = 'Sem pendências no momento';
+    let styleClass = 'border-l-4 border-l-gray-300 dark:border-l-gray-600';
+    let iconColor = 'text-gray-400';
+    
+    switch (severityLevel) {
+        case 1:
+            statusText = 'Atenção: pendências baixas';
+            styleClass = 'border-l-4 border-l-yellow-500 bg-yellow-50/50 dark:bg-yellow-900/10';
+            iconColor = 'text-yellow-600 dark:text-yellow-500';
+            break;
+        case 2:
+            statusText = 'Alerta: pendências acumulando';
+            styleClass = 'border-l-4 border-l-orange-500 bg-orange-50/50 dark:bg-orange-900/10';
+            iconColor = 'text-orange-600 dark:text-orange-500';
+            break;
+        case 3:
+            statusText = 'Crítico: risco operacional';
+            styleClass = 'border-l-4 border-l-red-600 bg-red-50 dark:bg-red-900/20';
+            iconColor = 'text-red-600 dark:text-red-500 animate-pulse';
+            break;
+    }
+
+    return {
+        count,
+        oldest,
+        severityLevel,
+        statusText,
+        styleClass,
+        iconColor
+    };
+  },
+
+  getGeneralStatus: (score: number, radarSeverity: number) => {
+    // 1. Critical: Radar High Risk OR Low Score
+    if (radarSeverity === 3 || score < 50) {
+        return {
+            status: 'CRÍTICO',
+            color: 'bg-red-600',
+            textColor: 'text-white',
+            description: 'Ação imediata necessária'
+        };
+    }
+    
+    // 2. Warning: Radar Medium Risk OR Medium Score
+    if (radarSeverity === 2 || (score >= 50 && score <= 70)) {
+        return {
+            status: 'ATENÇÃO',
+            color: 'bg-yellow-500',
+            textColor: 'text-white',
+            description: 'Monitore os indicadores'
+        };
+    }
+
+    // 3. Stable
+    return {
+        status: 'ESTÁVEL',
+        color: 'bg-green-600',
+        textColor: 'text-white',
+        description: 'Operação dentro da meta'
     };
   }
 };

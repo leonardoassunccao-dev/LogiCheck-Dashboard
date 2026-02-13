@@ -1,5 +1,5 @@
 import { STORAGE_KEYS } from '../constants';
-import { DriverIssue, ETrackRecord, ImportBatch, Theme } from '../types';
+import { DriverIssue, ETrackRecord, ImportBatch, OperationalManifest, Theme } from '../types';
 
 // --- UTILS ---
 
@@ -42,12 +42,15 @@ export const StorageService = {
     
     // Count items in current workspace
     const dataKey = `${STORAGE_KEYS.IMPORTED_DATA_PREFIX}_${wsId}`;
+    const manifestsKey = `${STORAGE_KEYS.OPERATIONAL_MANIFESTS_PREFIX}_${wsId}`;
     const historyKey = `${STORAGE_KEYS.IMPORT_HISTORY_PREFIX}_${wsId}`;
     
     const dataRaw = localStorage.getItem(dataKey);
+    const manifestsRaw = localStorage.getItem(manifestsKey);
     const histRaw = localStorage.getItem(historyKey);
     
     const totalRecordsStorage = dataRaw ? JSON.parse(dataRaw).length : 0;
+    const totalManifestsStorage = manifestsRaw ? JSON.parse(manifestsRaw).length : 0;
     const totalBatchesStorage = histRaw ? JSON.parse(histRaw).length : 0;
 
     return {
@@ -55,6 +58,7 @@ export const StorageService = {
       totalKeys: allKeys.length,
       keysList: allKeys,
       totalRecordsStorage,
+      totalManifestsStorage,
       totalBatchesStorage,
       origin: window.location.origin,
       activeDataKey: dataKey
@@ -124,10 +128,12 @@ export const StorageService = {
     
     // Initialize new keys immediately to prevent read errors
     const dataKey = `${STORAGE_KEYS.IMPORTED_DATA_PREFIX}_${newId}`;
+    const manifestsKey = `${STORAGE_KEYS.OPERATIONAL_MANIFESTS_PREFIX}_${newId}`;
     const historyKey = `${STORAGE_KEYS.IMPORT_HISTORY_PREFIX}_${newId}`;
     const issuesKey = `${STORAGE_KEYS.DRIVER_ISSUES_PREFIX}_${newId}`;
     
     localStorage.setItem(dataKey, JSON.stringify([]));
+    localStorage.setItem(manifestsKey, JSON.stringify([]));
     localStorage.setItem(historyKey, JSON.stringify([]));
     localStorage.setItem(issuesKey, JSON.stringify([]));
 
@@ -157,6 +163,27 @@ export const StorageService = {
     } catch (e) {
       alert('Erro de Armazenamento: Limite do navegador excedido. Execute "Limpar Todos os Dados".');
       console.error(e);
+    }
+  },
+
+  getOperationalManifests: (): OperationalManifest[] => {
+    try {
+      const key = getDynamicKey(STORAGE_KEYS.OPERATIONAL_MANIFESTS_PREFIX);
+      const raw = localStorage.getItem(key);
+      if (!raw) return [];
+      return JSON.parse(raw);
+    } catch (e) {
+      console.error('Failed to load operational manifests', e);
+      return [];
+    }
+  },
+
+  setOperationalManifests: (data: OperationalManifest[]) => {
+    try {
+      const key = getDynamicKey(STORAGE_KEYS.OPERATIONAL_MANIFESTS_PREFIX);
+      localStorage.setItem(key, JSON.stringify(data));
+    } catch (e) {
+      console.error('Failed to save operational manifests', e);
     }
   },
 

@@ -1,40 +1,43 @@
 import React, { useState, useRef, useMemo } from 'react';
 import * as XLSX from 'xlsx';
 import { Upload, RotateCcw, FileText, CheckCircle2, Trash2, AlertCircle, AlertTriangle } from 'lucide-react';
-import { ETrackRecord, ImportBatch } from '../types';
+import { ETrackRecord, ImportBatch, OperationalManifest } from '../types';
 import { Card } from './ui/Card';
 import { StorageService, generateUUID } from '../services/storageService';
 
 interface ImportDataTabProps {
   data: ETrackRecord[];
+  manifests: OperationalManifest[];
   history: ImportBatch[];
   // Atualiza dados no workspace ATUAL
-  onDataUpdate: (newData: ETrackRecord[], newHistory: ImportBatch[]) => void;
+  onDataUpdate: (newData: ETrackRecord[], newManifests: OperationalManifest[], newHistory: ImportBatch[]) => void;
 }
 
-const ImportDataTab: React.FC<ImportDataTabProps> = ({ data, history, onDataUpdate }) => {
+const ImportDataTab: React.FC<ImportDataTabProps> = ({ data, manifests, history, onDataUpdate }) => {
   const [isProcessing, setIsProcessing] = useState(false);
   const [importMode, setImportMode] = useState<'append' | 'replace'>('append');
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   // Identify orphaned records (data without a valid import batch link)
-  // This happens if data was imported before the batching logic was added.
   const orphanedCount = useMemo(() => {
     const validBatchIds = new Set(history.map(h => h.id));
     return data.filter(r => !r.importId || !validBatchIds.has(r.importId)).length;
   }, [data, history]);
 
-  // Helper para normalizar datas
-  const normalizeDate = (raw: any): string => {
-    if (raw === undefined || raw === null || raw === '') return new Date().toISOString();
+  // Helper para normalizar datas (Excel Serial ou String PT-BR)
+  const normalizeDate = (raw: any): string | null => {
+    if (raw === undefined || raw === null || raw === '') return null;
     let dateObj: Date | undefined;
+    
     if (typeof raw === 'number') {
+      // Excel Serial Date
       const excelEpoch = new Date(Date.UTC(1899, 11, 30));
       const totalMilliseconds = Math.round(raw * 86400 * 1000);
       const utcDate = new Date(excelEpoch.getTime() + totalMilliseconds);
       dateObj = new Date(utcDate.getUTCFullYear(), utcDate.getUTCMonth(), utcDate.getUTCDate(), 12, 0, 0);
     } else if (typeof raw === 'string') {
       const cleanStr = raw.trim();
+      // Tentativa DD/MM/YYYY HH:mm ou DD/MM/YYYY
       const ptBrRegex = /^(\d{1,2})[\/\-](\d{1,2})[\/\-](\d{4}|\d{2})/;
       const match = cleanStr.match(ptBrRegex);
       if (match) {
@@ -52,8 +55,21 @@ const ImportDataTab: React.FC<ImportDataTabProps> = ({ data, history, onDataUpda
     } else if (raw instanceof Date) {
        dateObj = new Date(raw.getFullYear(), raw.getMonth(), raw.getDate(), 12, 0, 0);
     }
+    
     if (dateObj && !isNaN(dateObj.getTime())) return dateObj.toISOString();
-    return new Date().toISOString();
+    return null;
+  };
+
+  // Helper para números PT-BR (1.000,00 -> 1000.00)
+  const parsePtBrFloat = (val: any): number => {
+    if (typeof val === 'number') return val;
+    if (typeof val === 'string') {
+      // Remove thousands separator (.), replace decimal separator (,) with (.)
+      const clean = val.replace(/\./g, '').replace(',', '.');
+      const float = parseFloat(clean);
+      return isNaN(float) ? 0 : float;
+    }
+    return 0;
   };
 
   const processFile = async (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -62,7 +78,9 @@ const ImportDataTab: React.FC<ImportDataTabProps> = ({ data, history, onDataUpda
     const files: File[] = Array.from(e.target.files);
     
     let incomingRecords: ETrackRecord[] = [];
+    let incomingManifests: OperationalManifest[] = []; 
     let incomingBatches: ImportBatch[] = [];
+    let hasNewManifestFormat = false;
 
     for (const file of files) {
       try {
@@ -72,20 +90,114 @@ const ImportDataTab: React.FC<ImportDataTabProps> = ({ data, history, onDataUpda
         const sheet = workbook.Sheets[sheetName];
         const jsonData = XLSX.utils.sheet_to_json(sheet, { raw: true }) as any[];
 
-        // Use safe UUID generator
         const batchId = generateUUID();
-        const mappedData: ETrackRecord[] = jsonData.map((row: any) => ({
-          id: generateUUID(),
-          importId: batchId,
-          nfColetadas: Number(row['NF Coletadas']) || 0,
-          veiculo: String(row['Veículo'] || row['Veiculo'] || 'N/A'),
-          motorista: String(row['Motorista'] || 'N/A'),
-          filial: String(row['Filial'] || 'N/A'),
-          conferenciaData: normalizeDate(row['Conferencia data']),
-          conferidoPor: String(row['Conferido por'] || 'N/A'),
-        })).filter(r => r.motorista !== 'N/A');
+        const now = new Date();
 
-        if (mappedData.length > 0) {
+        // 1. Check for Manifest Layout (New Module)
+        const isManifestFile = jsonData.length > 0 && ('Romaneio' in jsonData[0]) && ('Filial origem' in jsonData[0]);
+
+        if (isManifestFile) {
+          hasNewManifestFormat = true;
+          // AGGREGATION LOGIC
+          // We need to group rows by Unique Key: Filial origem + Romaneio + Tipo
+          const manifestMap = new Map<string, {
+            lines: any[],
+            aggregatedStatus: 'PENDENTE' | 'CONFERIDO'
+          }>();
+
+          jsonData.forEach((row: any) => {
+             const romaneio = String(row['Romaneio'] || '').trim();
+             const filialOrigem = String(row['Filial origem'] || '').trim();
+             const tipo = String(row['Tipo'] || '').trim();
+
+             if (!romaneio) return;
+
+             const key = `${filialOrigem}_${romaneio}_${tipo}`;
+             
+             if (!manifestMap.has(key)) {
+               manifestMap.set(key, { lines: [], aggregatedStatus: 'CONFERIDO' });
+             }
+             
+             const entry = manifestMap.get(key)!;
+             entry.lines.push(row);
+
+             // CHECK STATUS FOR THIS LINE
+             // Regra: PENDENTE se Status != "Conferido" OU Data conf vazio OU Usuario conf vazio
+             const statusLine = String(row['Status'] || '').toUpperCase();
+             const dataConf = row['Data conferencia volume'];
+             const userConf = row['Usuario conferencia volume'];
+             
+             const isLinePending = 
+                statusLine !== 'CONFERIDO' || 
+                !dataConf || 
+                !userConf || 
+                String(userConf).trim() === '';
+
+             if (isLinePending) {
+                entry.aggregatedStatus = 'PENDENTE';
+             }
+          });
+
+          // Convert Map to OperationalManifest objects
+          manifestMap.forEach((value, key) => {
+             const firstRow = value.lines[0];
+             
+             // Agregações
+             const uniqueNFs = new Set<string>();
+             let totalVolume = 0;
+             let totalPeso = 0;
+
+             value.lines.forEach(r => {
+                if (r['NF']) uniqueNFs.add(String(r['NF']));
+                totalVolume += parsePtBrFloat(r['Volume']);
+                totalPeso += parsePtBrFloat(r['Peso']);
+             });
+
+             const dataInc = normalizeDate(firstRow['Data Inc. romaneio']) || now.toISOString();
+             
+             // Aging Calculation
+             const createdTime = new Date(dataInc).getTime();
+             const daysOpen = Math.floor((now.getTime() - createdTime) / (1000 * 60 * 60 * 24));
+
+             incomingManifests.push({
+                id: generateUUID(),
+                key: key,
+                romaneio: String(firstRow['Romaneio']),
+                tipo: String(firstRow['Tipo'] || 'N/A'),
+                carga: String(firstRow['Carga'] || 'N/A'),
+                filialOrigem: String(firstRow['Filial origem'] || 'N/A'),
+                filialDestino: String(firstRow['Filial destino'] || 'N/A'),
+                veiculo: String(firstRow['Veículo'] || firstRow['Veiculo'] || 'N/A'),
+                motorista: String(firstRow['Motorista'] || 'N/A'),
+                dataIncRomaneio: dataInc,
+                
+                totalNfs: uniqueNFs.size,
+                totalVolume: totalVolume,
+                totalPeso: totalPeso,
+                
+                status: value.aggregatedStatus,
+                diasEmAberto: daysOpen >= 0 ? daysOpen : 0,
+                ultimoUpdate: now.toISOString()
+             });
+          });
+
+        } else {
+          // 2. Parse General Dashboard Data (Existing Module)
+          // Keep existing logic for backwards compatibility or other file types
+          const mappedData: ETrackRecord[] = jsonData
+            .map((row: any) => ({
+              id: generateUUID(),
+              importId: batchId,
+              nfColetadas: Number(row['NF Coletadas']) || 0,
+              veiculo: String(row['Veículo'] || row['Veiculo'] || 'N/A'),
+              motorista: String(row['Motorista'] || 'N/A'),
+              filial: String(row['Filial'] || 'N/A'),
+              conferenciaData: normalizeDate(row['Conferencia data']) || new Date().toISOString(),
+              conferidoPor: String(row['Conferido por'] || 'N/A'),
+            }))
+            .filter(r => r.motorista !== 'N/A' && (r.nfColetadas > 0 || r.conferidoPor !== 'N/A')); // Simple validation
+
+          if (mappedData.length > 0) {
             incomingRecords = [...incomingRecords, ...mappedData];
             incomingBatches.push({
                 id: batchId,
@@ -93,38 +205,78 @@ const ImportDataTab: React.FC<ImportDataTabProps> = ({ data, history, onDataUpda
                 timestamp: new Date().toISOString(),
                 recordCount: mappedData.length
             });
+          }
         }
       } catch (error) {
         console.error("Error parsing file", file.name, error);
-        alert(`Erro ao ler arquivo ${file.name}`);
+        alert(`Erro ao ler arquivo ${file.name}: Verifique o formato.`);
       }
     }
 
-    if (incomingRecords.length > 0) {
-      let finalData: ETrackRecord[];
-      let finalHistory: ImportBatch[];
-      if (importMode === 'replace') {
-          finalData = incomingRecords;
-          finalHistory = incomingBatches;
-      } else {
-          finalData = [...data, ...incomingRecords];
-          finalHistory = [...history, ...incomingBatches];
+    if (incomingRecords.length > 0 || incomingManifests.length > 0) {
+      let finalData: ETrackRecord[] = data;
+      let finalManifests: OperationalManifest[] = manifests;
+      let finalHistory: ImportBatch[] = history;
+
+      // Logic for General Data
+      if (incomingRecords.length > 0) {
+          if (importMode === 'replace') {
+              finalData = incomingRecords;
+              finalHistory = incomingBatches;
+          } else {
+              finalData = [...data, ...incomingRecords];
+              finalHistory = [...history, ...incomingBatches];
+          }
       }
-      onDataUpdate(finalData, finalHistory);
-      alert(`${incomingRecords.length} registros importados com sucesso!`);
+
+      // Logic for Manifests
+      if (incomingManifests.length > 0) {
+          // MIGRATION / CLEANUP: If we detect the new format, but current data is empty or old format (missing 'filialOrigem'), wipe it first to avoid conflicts
+          const currentIsOld = manifests.length > 0 && !manifests[0].filialOrigem;
+          let baseManifests = (importMode === 'replace' || currentIsOld) ? [] : manifests;
+          
+          finalManifests = deduplicateManifests(baseManifests, incomingManifests);
+      }
+
+      onDataUpdate(finalData, finalManifests, finalHistory);
+      
+      let msg = '';
+      if (incomingRecords.length > 0) msg += `${incomingRecords.length} registros gerais. `;
+      if (incomingManifests.length > 0) msg += `${incomingManifests.length} romaneios (agregados).`;
+      
+      alert(`Importação concluída: ${msg}`);
     } else {
-      alert('Nenhum registro válido encontrado nos arquivos.');
+      alert('Nenhum registro válido encontrado. Verifique se as colunas correspondem ao padrão.');
     }
+    
     setIsProcessing(false);
     if (fileInputRef.current) fileInputRef.current.value = '';
+  };
+
+  // Deduplicate based on the generated Key
+  const deduplicateManifests = (existing: OperationalManifest[], incoming: OperationalManifest[]): OperationalManifest[] => {
+     const map = new Map<string, OperationalManifest>();
+     
+     // Load existing
+     existing.forEach(item => {
+        // Fallback for old data without key property
+        const key = item.key || `${item.filialOrigem}_${item.romaneio}_${item.tipo}`;
+        map.set(key, item);
+     });
+
+     // Process incoming (overwrite existing)
+     incoming.forEach(item => {
+        map.set(item.key, item);
+     });
+
+     return Array.from(map.values());
   };
 
   const handleDeleteOrphans = () => {
      if (window.confirm(`Excluir ${orphanedCount} registros antigos/legados que não estão vinculados a nenhum arquivo?`)) {
         const validBatchIds = new Set(history.map(h => h.id));
-        // Keep only records that have a valid batch ID
         const newData = data.filter(record => record.importId && validBatchIds.has(record.importId));
-        onDataUpdate(newData, history);
+        onDataUpdate(newData, manifests, history);
      }
   };
 
@@ -132,7 +284,6 @@ const ImportDataTab: React.FC<ImportDataTabProps> = ({ data, history, onDataUpda
     const confirmMsg = "⚠️ ATENÇÃO: RESET DE FÁBRICA ⚠️\n\nVocê está prestes a apagar TODOS os dados do aplicativo, incluindo:\n- Todos os arquivos importados\n- Histórico de importação\n- Pendências registradas\n- Configurações locais\n\nO aplicativo será reiniciado.\n\nTem certeza absoluta?";
 
     if (window.confirm(confirmMsg)) {
-        // Nuclear option: Direct storage wipe + Reload
         StorageService.clearAllData();
         window.location.reload();
     }
@@ -145,7 +296,7 @@ const ImportDataTab: React.FC<ImportDataTabProps> = ({ data, history, onDataUpda
         
         <div className="flex flex-wrap items-center gap-2">
             
-            {(data.length > 0 || history.length > 0) && (
+            {(data.length > 0 || history.length > 0 || manifests.length > 0) && (
                 <button
                     type="button"
                     onClick={handleFactoryReset}
@@ -158,7 +309,7 @@ const ImportDataTab: React.FC<ImportDataTabProps> = ({ data, history, onDataUpda
             )}
 
             <span className="text-sm bg-gray-100 dark:bg-gray-800 px-3 py-1 rounded-full text-gray-600 dark:text-gray-300">
-            Total: <strong>{data.length}</strong>
+            Records: <strong>{data.length}</strong> | Romaneios: <strong>{manifests.length}</strong>
             </span>
         </div>
       </div>
@@ -188,8 +339,10 @@ const ImportDataTab: React.FC<ImportDataTabProps> = ({ data, history, onDataUpda
 
           <div className="flex flex-col items-center justify-center border-2 border-dashed border-gray-300 dark:border-gray-600 rounded-lg p-8 hover:bg-gray-50 dark:hover:bg-gray-700/50 transition-colors">
             <Upload className="w-12 h-12 text-marsala-500 mb-4" />
-            <p className="text-center text-gray-600 dark:text-gray-300 mb-4">
-              Clique para selecionar arquivos .xls ou .xlsx
+            <p className="text-center text-gray-600 dark:text-gray-300 mb-4 text-sm">
+              Suporta: <br/>
+              1. Romaneios Pendentes (Romaneio, Status, NF, etc)<br/>
+              2. Dashboard Geral (NF Coletadas, Motorista, etc)
             </p>
             <input
               type="file"
@@ -209,7 +362,7 @@ const ImportDataTab: React.FC<ImportDataTabProps> = ({ data, history, onDataUpda
             </button>
           </div>
           <div className="mt-4 text-xs text-gray-400 text-center">
-              Modo selecionado: <strong>{importMode === 'append' ? 'Adicionar (Mantém anteriores)' : 'Substituir (Apaga anteriores)'}</strong>
+              Modo selecionado: <strong>{importMode === 'append' ? 'Adicionar (Atualiza existentes)' : 'Substituir (Apaga anteriores)'}</strong>
           </div>
         </Card>
 
@@ -217,7 +370,7 @@ const ImportDataTab: React.FC<ImportDataTabProps> = ({ data, history, onDataUpda
         <Card title="Histórico de Imports" className="h-full flex flex-col relative">
           
           <p className="text-sm text-gray-500 dark:text-gray-400 mb-4 px-1">
-            Registro dos arquivos importados neste ciclo.
+            Registro dos arquivos de dados gerais.
           </p>
 
           <div className="flex-1 min-h-0 flex flex-col relative z-0">
@@ -293,37 +446,6 @@ const ImportDataTab: React.FC<ImportDataTabProps> = ({ data, history, onDataUpda
           </div>
         </Card>
       </div>
-
-      {data.length > 0 && (
-        <Card title="Prévia dos Dados (Últimos 10)" noPadding>
-          <div className="overflow-x-auto">
-            <table className="w-full text-left border-collapse">
-              <thead>
-                <tr className="bg-gray-50 dark:bg-gray-700/50 text-gray-500 dark:text-gray-400 text-xs uppercase">
-                  <th className="p-4 font-medium">Data</th>
-                  <th className="p-4 font-medium">Motorista</th>
-                  <th className="p-4 font-medium">Veículo</th>
-                  <th className="p-4 font-medium text-right">NFs</th>
-                  <th className="p-4 font-medium">Filial</th>
-                </tr>
-              </thead>
-              <tbody className="divide-y divide-gray-100 dark:divide-gray-700 text-sm">
-                {data.slice(-10).reverse().map((row) => (
-                  <tr key={row.id} className="hover:bg-gray-50 dark:hover:bg-gray-700/30 text-gray-700 dark:text-gray-300">
-                    <td className="p-4 font-mono text-gray-600 dark:text-gray-400">
-                      {new Date(row.conferenciaData).toLocaleDateString('pt-BR')}
-                    </td>
-                    <td className="p-4 font-medium">{row.motorista}</td>
-                    <td className="p-4">{row.veiculo}</td>
-                    <td className="p-4 text-right">{row.nfColetadas}</td>
-                    <td className="p-4">{row.filial}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        </Card>
-      )}
     </div>
   );
 };

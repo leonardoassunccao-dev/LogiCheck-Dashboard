@@ -1,10 +1,10 @@
 import React, { useMemo, useState } from 'react';
-import { ETrackRecord, DrillDownType } from '../types';
+import { ETrackRecord, DrillDownType, OperationalManifest } from '../types';
 import { Card, KPICard } from './ui/Card';
 import { 
   LayoutDashboard, Users, MapPin, Package, Download, 
-  UserCheck, Activity, ClipboardList, Calendar, 
-  Zap, ChevronRight, BarChart3, Tv
+  Zap, ChevronRight, BarChart3, Tv, ClipboardList, Calendar,
+  Siren, AlertTriangle, Info, CheckCircle2, Activity
 } from 'lucide-react';
 import { 
   BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, 
@@ -16,11 +16,12 @@ import DrillDownModal from './DrillDownModal';
 
 interface DashboardTabProps {
   data: ETrackRecord[];
+  manifests: OperationalManifest[];
   isMeetingMode: boolean;
   onToggleMeetingMode: () => void;
 }
 
-const DashboardTab: React.FC<DashboardTabProps> = ({ data, isMeetingMode, onToggleMeetingMode }) => {
+const DashboardTab: React.FC<DashboardTabProps> = ({ data, manifests, isMeetingMode, onToggleMeetingMode }) => {
   const [drillDownType, setDrillDownType] = useState<DrillDownType | null>(null);
   const [dateStart, setDateStart] = useState('');
   const [dateEnd, setDateEnd] = useState('');
@@ -35,9 +36,17 @@ const DashboardTab: React.FC<DashboardTabProps> = ({ data, isMeetingMode, onTogg
     });
   }, [data, dateStart, dateEnd]);
 
-  const score = useMemo(() => AnalysisService.calculateScore(filteredData), [filteredData]);
+  // Calculations
+  // Pass both filteredData AND manifests to the new Score Calculation
+  const score = useMemo(() => AnalysisService.calculateScore(filteredData, manifests), [filteredData, manifests]);
   const insights = useMemo(() => AnalysisService.getInsights(filteredData), [filteredData]);
   const comparison = useMemo(() => AnalysisService.getComparison(filteredData), [filteredData]);
+  const radarAlert = useMemo(() => AnalysisService.getRadarAlert(manifests), [manifests]);
+
+  // General Status Calculation
+  const generalStatus = useMemo(() => 
+    AnalysisService.getGeneralStatus(score.score, radarAlert.severityLevel), 
+  [score, radarAlert]);
 
   const kpis = useMemo(() => {
     const totalNfs = filteredData.reduce((acc, curr) => acc + curr.nfColetadas, 0);
@@ -72,7 +81,15 @@ const DashboardTab: React.FC<DashboardTabProps> = ({ data, isMeetingMode, onTogg
     return Object.entries(map).map(([name, value]) => ({ name, value })).sort((a, b) => b.value - a.value).slice(0, 5);
   }, [filteredData]);
 
-  if (data.length === 0) {
+  // Helper to get Icon for Radar Alert
+  const getRadarIcon = (severity: number) => {
+      if (severity === 3) return <Siren size={32} />;
+      if (severity === 2) return <AlertTriangle size={32} />;
+      if (severity === 1) return <Info size={32} />;
+      return <CheckCircle2 size={32} />;
+  };
+
+  if (data.length === 0 && manifests.length === 0) {
     return (
       <div className="flex flex-col items-center justify-center min-h-[70vh] text-center p-8 animate-fadeIn">
         <div className="w-20 h-20 bg-marsala-50 dark:bg-marsala-900/10 rounded-3xl flex items-center justify-center text-marsala-600 mb-8 shadow-inner">
@@ -99,6 +116,18 @@ const DashboardTab: React.FC<DashboardTabProps> = ({ data, isMeetingMode, onTogg
     <>
       <div className={`space-y-8 animate-fadeIn ${isMeetingMode ? 'max-w-full px-4' : ''}`}>
         
+        {/* Status Strip */}
+        <div className={`w-full py-2.5 px-6 ${generalStatus.color} ${generalStatus.textColor} rounded-xl shadow-md flex justify-between items-center transition-all duration-300`}>
+             <div className="flex items-center gap-2">
+                 <Activity size={18} className="animate-pulse" />
+                 <span className="text-xs font-black uppercase tracking-widest opacity-90">Status Geral</span>
+             </div>
+             <div className="flex items-center gap-2">
+                 <span className="text-sm font-bold">{generalStatus.status}</span>
+                 <span className="text-xs opacity-80 hidden sm:inline border-l border-white/30 pl-2">{generalStatus.description}</span>
+             </div>
+        </div>
+
         {/* Top Control Bar */}
         <div className="flex flex-col lg:flex-row justify-between items-start lg:items-center gap-6">
           <div className="flex items-center gap-4">
@@ -137,45 +166,76 @@ const DashboardTab: React.FC<DashboardTabProps> = ({ data, isMeetingMode, onTogg
           </div>
         </div>
 
-        {/* Intelligence Layer */}
+        {/* Intelligence Layer & Status */}
         <div className="grid grid-cols-1 xl:grid-cols-12 gap-6">
           
-          {/* LogiCheck Score */}
-          <Card className="xl:col-span-4 flex flex-col justify-center items-center text-center relative overflow-hidden group">
+          {/* 1. LogiCheck Score (Expanded to 3 cols) */}
+          <Card className="xl:col-span-3 flex flex-col justify-center items-center text-center relative overflow-hidden group">
             <div className="absolute top-0 right-0 p-8 opacity-5 group-hover:opacity-10 transition-opacity">
-               <BarChart3 size={120} />
+               <BarChart3 size={100} />
             </div>
-            <div className="relative z-10">
-              <p className="text-xs font-black text-gray-400 uppercase tracking-widest mb-6">Índice LogiCheck</p>
-              <div className="relative inline-flex items-center justify-center mb-6">
-                 <svg className="w-32 h-32 transform -rotate-90">
-                    <circle cx="64" cy="64" r="58" stroke="currentColor" strokeWidth="8" fill="transparent" className="text-gray-100 dark:text-gray-700" />
-                    <circle cx="64" cy="64" r="58" stroke="currentColor" strokeWidth="8" fill="transparent" strokeDasharray={364.4} strokeDashoffset={364.4 - (364.4 * score.score) / 100} className={score.color} strokeLinecap="round" />
+            <div className="relative z-10 py-2">
+              <p className="text-xs font-black text-gray-400 uppercase tracking-widest mb-1">Índice LogiCheck</p>
+              <p className="text-[10px] font-bold text-marsala-600 dark:text-marsala-400 uppercase tracking-wider mb-4">Saúde Operacional</p>
+              
+              <div className="relative inline-flex items-center justify-center mb-4">
+                 <svg className="w-28 h-28 transform -rotate-90">
+                    <circle cx="56" cy="56" r="50" stroke="currentColor" strokeWidth="8" fill="transparent" className="text-gray-100 dark:text-gray-700" />
+                    <circle cx="56" cy="56" r="50" stroke="currentColor" strokeWidth="8" fill="transparent" strokeDasharray={314} strokeDashoffset={314 - (314 * score.score) / 100} className={score.color} strokeLinecap="round" />
                  </svg>
-                 <span className="absolute text-3xl font-black dark:text-white">{score.score}</span>
+                 <span className="absolute text-2xl font-black dark:text-white">{score.score}</span>
               </div>
-              <h4 className={`text-xl font-bold ${score.color} mb-1`}>{score.label}</h4>
-              <p className="text-sm text-gray-500 max-w-[200px]">Baseado na distribuição de conferência e volumetria.</p>
+              <h4 className={`text-lg font-bold ${score.color} mb-2 leading-none`}>{score.label}</h4>
+              <p className="text-[10px] text-gray-400 px-4 leading-tight">Avalia equilíbrio de conferência, volumetria e pendências.</p>
             </div>
           </Card>
 
-          {/* Insights Cards */}
-          <div className="xl:col-span-8 flex flex-col gap-4">
-             <div className="flex items-center gap-2 mb-2">
-                <Zap size={18} className="text-marsala-500" />
-                <h3 className="text-sm font-black text-gray-900 dark:text-white uppercase tracking-widest">Insights Inteligentes</h3>
+          {/* 2. SMART ALERT CARD (Radar Operacional) (3 cols) */}
+          <div 
+             onClick={() => window.location.hash = '#romaneios'}
+             className={`xl:col-span-3 rounded-2xl shadow-soft border border-gray-100 dark:border-gray-700/50 p-6 flex flex-col justify-between cursor-pointer hover:-translate-y-1 transition-all duration-300 relative overflow-hidden group ${radarAlert.styleClass}`}
+          >
+             <div className="flex justify-between items-start z-10">
+                 <div>
+                    <h3 className="text-sm font-black text-gray-700 dark:text-gray-200 uppercase tracking-wide">Radar Operacional</h3>
+                    <p className={`text-xs font-bold mt-1 ${radarAlert.iconColor}`}>{radarAlert.statusText}</p>
+                 </div>
+                 <div className={`${radarAlert.iconColor}`}>
+                    {getRadarIcon(radarAlert.severityLevel)}
+                 </div>
              </div>
-             <div className="grid grid-cols-1 md:grid-cols-3 gap-4 h-full">
+             
+             <div className="mt-6 z-10">
+                <div className="text-4xl font-black text-gray-900 dark:text-white tracking-tighter">
+                   {radarAlert.count}
+                   <span className="text-sm text-gray-400 font-medium ml-2">pendentes</span>
+                </div>
+                <div className="mt-2 text-xs text-gray-500 dark:text-gray-400 font-medium bg-white/50 dark:bg-black/20 inline-block px-2 py-1 rounded-md">
+                   Mais antiga: <strong>{radarAlert.oldest} dias</strong>
+                </div>
+             </div>
+
+             <ChevronRight size={16} className="absolute bottom-6 right-6 text-gray-300 opacity-0 group-hover:opacity-100 transition-opacity" />
+          </div>
+
+          {/* 3. Insights Cards (6 cols) */}
+          <div className="xl:col-span-6 flex flex-col gap-4">
+             <div className="flex items-center gap-2 mb-1">
+                <Zap size={16} className="text-marsala-500" />
+                <h3 className="text-xs font-black text-gray-900 dark:text-white uppercase tracking-widest">Insights Inteligentes</h3>
+             </div>
+             <div className="grid grid-cols-1 sm:grid-cols-3 gap-4 h-full">
                 {insights.map((insight, idx) => (
-                  <Card key={idx} className="flex-1 border-l-4 border-l-marsala-500/50">
-                    <h5 className="text-xs font-black text-marsala-600 dark:text-marsala-400 uppercase mb-2">{insight.title}</h5>
-                    <p className="text-sm text-gray-600 dark:text-gray-300 font-medium leading-snug">{insight.description}</p>
-                    <button 
-                      onClick={() => insight.drillDown && setDrillDownType(insight.drillDown)}
-                      className="mt-4 flex items-center text-marsala-500 font-bold text-xs gap-1 group cursor-pointer bg-transparent border-none p-0 outline-none"
-                    >
-                       Ver detalhe <ChevronRight size={14} className="group-hover:translate-x-1 transition-transform" />
-                    </button>
+                  <Card key={idx} className="flex-1 border-l-4 border-l-marsala-500/50 flex flex-col justify-between">
+                    <div>
+                        <h5 className="text-[10px] font-black text-marsala-600 dark:text-marsala-400 uppercase mb-2">{insight.title}</h5>
+                        <p className="text-xs text-gray-600 dark:text-gray-300 font-medium leading-snug">{insight.description}</p>
+                    </div>
+                    {insight.drillDown && (
+                        <div className="mt-3 text-right">
+                           <span className="text-[10px] text-marsala-500 font-bold hover:underline cursor-pointer">Ver detalhe →</span>
+                        </div>
+                    )}
                   </Card>
                 ))}
              </div>
@@ -185,7 +245,7 @@ const DashboardTab: React.FC<DashboardTabProps> = ({ data, isMeetingMode, onTogg
         {/* Main KPIs Grid */}
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6">
           <KPICard 
-            title="Romaneios" value={kpis.count} icon={<ClipboardList />} 
+            title="Romaneios (Base)" value={kpis.count} icon={<ClipboardList />} 
             trend={{ value: comparison.diff, direction: comparison.trend as any }}
             onClick={() => setDrillDownType('ROMANEIOS')}
           />

@@ -2,6 +2,7 @@ import React, { useState, useEffect } from 'react';
 import { Layout } from './components/Layout';
 import DashboardTab from './components/DashboardTab';
 import PendenciasTab from './components/PendenciasTab';
+import RomaneiosTab from './components/RomaneiosTab';
 import ImportDataTab from './components/ImportDataTab';
 import { StorageService } from './services/storageService';
 import { AppState, Tab } from './types';
@@ -11,6 +12,7 @@ const App: React.FC = () => {
   const [state, setState] = useState<AppState>({
     theme: 'light',
     importedData: [],
+    operationalManifests: [], // Initialize new state
     importHistory: [],
     driverIssues: [],
     isMeetingMode: false
@@ -20,7 +22,7 @@ const App: React.FC = () => {
   useEffect(() => {
     const handleHash = () => {
       const hash = window.location.hash.replace('#', '') as Tab;
-      if (['dashboard', 'pendencias', 'dados'].includes(hash)) {
+      if (['dashboard', 'pendencias', 'romaneios', 'dados'].includes(hash)) {
         setActiveTab(hash);
       }
     };
@@ -42,6 +44,7 @@ const App: React.FC = () => {
       ...prev,
       theme: loadedTheme,
       importedData: StorageService.getImportedData(),
+      operationalManifests: StorageService.getOperationalManifests(), // Load new data
       importHistory: StorageService.getImportHistory(),
       driverIssues: StorageService.getDriverIssues()
     }));
@@ -57,9 +60,10 @@ const App: React.FC = () => {
     setState(prev => ({ ...prev, isMeetingMode: !prev.isMeetingMode }));
   };
 
-  const updateImportData = (data: typeof state.importedData, history: typeof state.importHistory) => {
-    setState(prev => ({ ...prev, importedData: data, importHistory: history }));
+  const updateImportData = (data: typeof state.importedData, manifests: typeof state.operationalManifests, history: typeof state.importHistory) => {
+    setState(prev => ({ ...prev, importedData: data, operationalManifests: manifests, importHistory: history }));
     StorageService.setImportedData(data);
+    StorageService.setOperationalManifests(manifests); // Save new data
     StorageService.setImportHistory(history);
   };
 
@@ -69,9 +73,14 @@ const App: React.FC = () => {
         return (
           <DashboardTab 
             data={state.importedData} 
+            manifests={state.operationalManifests}
             isMeetingMode={state.isMeetingMode}
             onToggleMeetingMode={handleToggleMeetingMode}
           />
+        );
+      case 'romaneios':
+        return (
+          <RomaneiosTab manifests={state.operationalManifests} />
         );
       case 'pendencias':
         return (
@@ -87,7 +96,8 @@ const App: React.FC = () => {
       case 'dados':
         return (
           <ImportDataTab 
-            data={state.importedData} 
+            data={state.importedData}
+            manifests={state.operationalManifests} 
             history={state.importHistory}
             onDataUpdate={updateImportData}
           />
