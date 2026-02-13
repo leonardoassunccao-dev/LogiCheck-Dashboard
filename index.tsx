@@ -1,4 +1,5 @@
-import React, { Component, ErrorInfo, ReactNode } from 'react';
+
+import React, { ErrorInfo, ReactNode } from 'react';
 import ReactDOM from 'react-dom/client';
 import App from './App';
 
@@ -11,15 +12,16 @@ interface ErrorBoundaryState {
   error: Error | null;
 }
 
-// Added constructor with super(props) to fix the error: Property 'props' does not exist on type 'ErrorBoundary'.
-// This ensures that the class instance correctly inherits and types the 'props' member from the base React.Component.
-class ErrorBoundary extends Component<ErrorBoundaryProps, ErrorBoundaryState> {
+// Fixed ErrorBoundary by using React.Component and class property initialization for state.
+// This resolves TypeScript errors regarding missing 'state' and 'props' properties by providing explicit type context.
+class ErrorBoundary extends React.Component<ErrorBoundaryProps, ErrorBoundaryState> {
+  public state: ErrorBoundaryState = {
+    hasError: false,
+    error: null
+  };
+
   constructor(props: ErrorBoundaryProps) {
     super(props);
-    this.state = {
-      hasError: false,
-      error: null
-    };
   }
 
   public static getDerivedStateFromError(error: Error): ErrorBoundaryState {
