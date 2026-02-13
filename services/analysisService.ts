@@ -1,28 +1,27 @@
-import { OperationalManifest, TransferCycle, TransferPendencyType, PriorityLevel, FilialOperationalStats, ETrackRecord, LogiCheckScore, OperationalInsight } from '../types';
+import { OperationalManifest, TransferCycle, TransferPendencyType, FilialOperationalStats, ETrackRecord, LogiCheckScore, OperationalInsight, ManifestStatus } from '../types';
 
 export const AnalysisService = {
   /**
-   * Agrupa manifestos em Ciclos de Transferência (Transferência = Romaneio + Origem)
+   * BASE ÚNICA RADARDATA
+   * Retorna 1 linha por Transferência (DISTINCT id_transferencia + origem_filial)
    */
   getTransferCycles: (manifests: OperationalManifest[]): TransferCycle[] => {
-    const cyclesMap = new Map<string, TransferCycle>();
+    const cyclesMap = new Map<string, any>();
     const now = new Date();
 
+    // Agregação por id_transferencia + origem_filial
     manifests.forEach(m => {
-      // O ID da transferência é composto pelo número do romaneio e a filial de origem
       const cycleKey = `${m.filialOrigem}_${m.romaneio}`;
-      
       if (!cyclesMap.has(cycleKey)) {
         cyclesMap.set(cycleKey, {
-          id: m.romaneio,
+          romaneio: m.romaneio,
           filialOrigem: m.filialOrigem,
           filialDestino: m.filialDestino,
           dataCriacao: m.dataIncRomaneio,
           motorista: m.motorista,
           veiculo: m.veiculo,
-          statusGeral: 'OK',
-          agingHours: 0,
-          priority: 'BAIXA',
+          carregamento: null as OperationalManifest | null,
+          descarga: null as OperationalManifest | null,
           totalNfs: m.totalNfs,
           totalVolume: m.totalVolume
         });
@@ -30,8 +29,8 @@ export const AnalysisService = {
 
       const cycle = cyclesMap.get(cycleKey)!;
       const tipo = (m.tipo || '').toUpperCase();
-
-      // Mapeamento de Carregamento vs Descarga baseado no "Tipo" da linha do E-track
+      
+      // Mapeia Carga vs Descarga
       if (tipo.includes('CARREGAMENTO') || tipo.includes('SAIDA') || tipo.includes('SAÍDA')) {
         cycle.carregamento = m;
       } else if (tipo.includes('DESCARGA') || tipo.includes('ENTRADA') || tipo.includes('CHEGADA')) {
@@ -42,52 +41,58 @@ export const AnalysisService = {
     });
 
     return Array.from(cyclesMap.values()).map(cycle => {
-      const start = new Date(cycle.dataCriacao);
-      cycle.agingHours = Math.floor((now.getTime() - start.getTime()) / (1000 * 60 * 60));
-
       const car = cycle.carregamento;
       const des = cycle.descarga;
-
-      const carStatus = car?.status || 'AUSENTE';
-      const desStatus = des?.status || 'AUSENTE';
-      const hasDivergence = carStatus === 'DIVERGENTE' || desStatus === 'DIVERGENTE';
-
-      // 1. CLASSIFICAÇÃO DE TIPO DE PENDÊNCIA
-      let status: TransferPendencyType = 'OK';
+      const carStatus: ManifestStatus = car?.status || 'AUSENTE';
+      const desStatus: ManifestStatus = des?.status || 'AUSENTE';
       
-      if (hasDivergence) {
-        status = 'PEND_DIVERGENCIA';
+      const start = new Date(cycle.dataCriacao);
+      const aging_horas = Math.floor((now.getTime() - start.getTime()) / (1000 * 60 * 60));
+
+      const divergencia_ativa = carStatus === 'DIVERGENTE' || desStatus === 'DIVERGENTE';
+      
+      // REGRAS DE TIPO DE PENDÊNCIA (HIERARQUIA)
+      let tipo_pendencia: TransferPendencyType = 'OK';
+      let pendente = true;
+
+      if (divergencia_ativa) {
+        tipo_pendencia = 'DIVERGENCIA';
       } else if (carStatus !== 'CONFERIDO') {
-        status = 'PEND_ORIGEM';
+        tipo_pendencia = 'ORIGEM';
       } else if (desStatus !== 'CONFERIDO') {
-        status = 'PEND_DESTINO';
-      }
-
-      cycle.statusGeral = status;
-
-      // 2. REGRAS DE PRIORIDADE
-      if (status === 'PEND_DIVERGENCIA' && cycle.agingHours >= 24) {
-        cycle.priority = 'ALTA';
-      } else if (status === 'PEND_DESTINO' && cycle.agingHours >= 24) {
-        cycle.priority = 'MEDIA';
-      } else if (status === 'PEND_DIVERGENCIA' || (status !== 'OK' && cycle.agingHours >= 48)) {
-        cycle.priority = 'ALTA';
+        tipo_pendencia = 'DESTINO';
       } else {
-        cycle.priority = 'BAIXA';
+        tipo_pendencia = 'OK';
+        pendente = false;
       }
 
-      return cycle;
+      return {
+        id: cycle.romaneio,
+        origem_filial: cycle.filialOrigem,
+        destino_filial: cycle.filialDestino,
+        created_at: cycle.dataCriacao,
+        motorista: cycle.motorista,
+        veiculo: cycle.veiculo,
+        carga_status: carStatus,
+        descarga_status: desStatus,
+        divergencia_ativa,
+        tipo_pendencia,
+        pendente,
+        aging_horas,
+        totalNfs: cycle.totalNfs,
+        totalVolume: cycle.totalVolume
+      };
     });
   },
 
   /**
-   * Agrega estatísticas por Filial de Origem e calcula Saúde (0-100)
+   * Estatísticas agrupadas por Filial de Origem
    */
   getFilialStats: (cycles: TransferCycle[]): FilialOperationalStats[] => {
     const map = new Map<string, any>();
 
     cycles.forEach(c => {
-      const f = c.filialOrigem || 'N/A';
+      const f = c.origem_filial;
       if (!map.has(f)) {
         map.set(f, { 
           filial: f, total: 0, concluidas: 0, pendentes: 0,
@@ -97,104 +102,57 @@ export const AnalysisService = {
       }
       const s = map.get(f)!;
       s.total++;
-      if (c.statusGeral === 'OK') {
+      if (!c.pendente) {
         s.concluidas++;
       } else {
         s.pendentes++;
-        s.agingSum += c.agingHours;
-        if (c.agingHours > s.maiorAging) s.maiorAging = c.agingHours;
+        s.agingSum += c.aging_horas;
+        if (c.aging_horas > s.maiorAging) s.maiorAging = c.aging_horas;
         
-        if (c.statusGeral === 'PEND_ORIGEM') s.pOrigem++;
-        if (c.statusGeral === 'PEND_DESTINO') s.pDestino++;
-        if (c.statusGeral === 'PEND_DIVERGENCIA') s.pDivergencia++;
+        if (c.tipo_pendencia === 'ORIGEM') s.pOrigem++;
+        if (c.tipo_pendencia === 'DESTINO') s.pDestino++;
+        if (c.tipo_pendencia === 'DIVERGENCIA') s.pDivergencia++;
       }
     });
 
-    return Array.from(map.values()).map(s => {
-      const avgAging = s.pendentes > 0 ? s.agingSum / s.pendentes : 0;
-      
-      // ALGORITMO DE SAÚDE DA FILIAL: saude = 100 - (pendentes*2) - (pend_divergencia*5) - (aging_medio*0.5)
-      let saude = 100 - (s.pendentes * 2) - (s.pDivergencia * 5) - (avgAging * 0.5);
-      saude = Math.max(0, Math.min(100, Math.round(saude)));
-
-      let status: 'ESTÁVEL' | 'ATENÇÃO' | 'CRÍTICO' = 'ESTÁVEL';
-      if (saude < 60) status = 'CRÍTICO';
-      else if (saude < 80) status = 'ATENÇÃO';
-
-      return {
-        ...s,
-        agingMedio: Math.round(avgAging),
-        saude,
-        status
-      };
-    }).sort((a, b) => a.saude - b.saude);
+    return Array.from(map.values()).map(s => ({
+      filial: s.filial,
+      total: s.total,
+      concluidas: s.concluidas,
+      pendentes: s.pendentes,
+      pOrigem: s.pOrigem,
+      pDestino: s.pDestino,
+      pDivergencia: s.pDivergencia,
+      agingMedio: s.pendentes > 0 ? Math.round(s.agingSum / s.pendentes) : 0,
+      maiorAging: s.maiorAging
+    })).sort((a, b) => b.pendentes - a.pendentes);
   },
 
-  /**
-   * Avalia o status geral da rede de transporte
-   */
   getGeneralOperationalStatus: (cycles: TransferCycle[]) => {
+    const pendingCount = cycles.filter(c => c.pendente).length;
     const total = cycles.length;
     if (total === 0) return { label: 'SEM DADOS', color: 'bg-gray-400', desc: 'Aguardando importação' };
 
-    const pending = cycles.filter(c => c.statusGeral !== 'OK');
-    const pendingRate = (pending.length / total) * 100;
-    const hasCriticalDivergence = pending.some(c => c.statusGeral === 'PEND_DIVERGENCIA' && c.agingHours > 48);
-
-    // Regras: 
-    // Crítico: pendentes > 35% OU divergência > 48h
-    // Atenção: pendentes > 20% e <= 35%
-    // Estável: pendentes <= 20% e sem divergência > 48h
-    if (pendingRate > 35 || hasCriticalDivergence) {
-      return { label: 'CRÍTICO', color: 'bg-red-600', desc: 'Rede congestionada ou com divergências críticas' };
-    }
-    if (pendingRate > 20) {
-      return { label: 'ATENÇÃO', color: 'bg-yellow-500', desc: 'Volume de pendências acima da meta operacional' };
-    }
-    return { label: 'ESTÁVEL', color: 'bg-green-600', desc: 'Operação fluindo conforme planejado' };
+    const rate = (pendingCount / total) * 100;
+    if (rate > 30) return { label: 'CRÍTICO', color: 'bg-red-600', desc: 'Alto volume de pendências na rede' };
+    if (rate > 15) return { label: 'ATENÇÃO', color: 'bg-yellow-500', desc: 'Pendências acima da meta' };
+    return { label: 'ESTÁVEL', color: 'bg-green-600', desc: 'Operação fluindo normalmente' };
   },
 
   calculateScore: (data: ETrackRecord[], manifests: OperationalManifest[]): LogiCheckScore => {
-    if (data.length === 0 && manifests.length === 0) return { score: 0, label: 'Sem Dados', color: 'text-gray-400' };
     const cycles = AnalysisService.getTransferCycles(manifests);
-    const concluidas = cycles.filter(c => c.statusGeral === 'OK').length;
-    const rate = cycles.length > 0 ? (concluidas / cycles.length) * 100 : 100;
-    
-    let label = 'Operação Saudável';
-    let color = 'text-green-600';
-    if (rate < 60) { label = 'Crítico / Instável'; color = 'text-red-600'; }
-    else if (rate < 80) { label = 'Atenção Necessária'; color = 'text-yellow-600'; }
-
-    return { score: Math.round(rate), label, color };
+    if (cycles.length === 0) return { score: 0, label: 'Sem Dados', color: 'text-gray-400' };
+    const concluidas = cycles.filter(c => !c.pendente).length;
+    const rate = (concluidas / cycles.length) * 100;
+    return { score: Math.round(rate), label: rate > 80 ? 'Saudável' : 'Atenção', color: rate > 80 ? 'text-green-600' : 'text-yellow-600' };
   },
 
-  getInsights: (data: ETrackRecord[]): OperationalInsight[] => {
-    if (data.length === 0) return [];
-    const topFilial = Object.entries(data.reduce((acc, curr) => {
-      acc[curr.filial] = (acc[curr.filial] || 0) + curr.nfColetadas;
-      return acc;
-    }, {} as Record<string, number>)).sort((a, b) => b[1] - a[1])[0];
-
-    return [{
-      type: 'positive',
-      title: 'Fluxo Principal',
-      description: `Filial ${topFilial?.[0]} processou o maior volume de NFs no período (${topFilial?.[1]}).`,
-      drillDown: 'FILIAIS'
-    }];
-  },
-
+  getInsights: (data: ETrackRecord[]): OperationalInsight[] => [],
   getComparison: (data: ETrackRecord[]) => ({ diff: 0, trend: 'stable' }),
   getRadarAlert: (manifests: OperationalManifest[]) => {
     const cycles = AnalysisService.getTransferCycles(manifests);
-    const pending = cycles.filter(c => c.statusGeral !== 'OK');
-    return {
-      severityLevel: pending.length > 20 ? 3 : pending.length > 10 ? 2 : pending.length > 0 ? 1 : 0,
-      count: pending.length,
-      oldest: pending.length > 0 ? Math.max(...pending.map(p => Math.floor(p.agingHours/24))) : 0,
-      statusText: pending.length > 0 ? `${pending.length} ciclos em aberto` : 'Fluxo zerado',
-      styleClass: '',
-      iconColor: ''
-    };
+    const pending = cycles.filter(c => c.pendente).length;
+    return { severityLevel: pending > 10 ? 2 : 0, count: pending, oldest: 0, statusText: `${pending} pendentes`, styleClass: '', iconColor: '' };
   },
   getGeneralStatus: (score: number, radarSeverity: number) => ({ status: 'OK', color: 'bg-green-600', textColor: 'text-white', description: '' })
 };

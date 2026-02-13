@@ -11,8 +11,8 @@ import {
   Activity,
   Calendar,
   CheckCircle2,
-  TrendingUp,
-  AlertCircle
+  MapPin,
+  ChevronDown
 } from 'lucide-react';
 import { OperationalManifest, TransferCycle, TransferPendencyType } from '../types';
 import { Card, KPICard } from './ui/Card';
@@ -30,264 +30,205 @@ const RomaneiosTab: React.FC<RomaneiosTabProps> = ({ manifests }) => {
   const [dateEnd, setDateEnd] = useState('');
   const [selectedFilial, setSelectedFilial] = useState('ALL');
 
-  // --- Lógica Principal de Ciclos ---
-  const allCycles = useMemo(() => AnalysisService.getTransferCycles(manifests), [manifests]);
+  // --- BASE ÚNICA RADARDATA ---
+  const radarData = useMemo(() => AnalysisService.getTransferCycles(manifests), [manifests]);
 
-  const filteredCycles = useMemo(() => {
-    return allCycles.filter(c => {
-      const cycleDate = new Date(c.dataCriacao).toISOString().split('T')[0];
+  const filteredData = useMemo(() => {
+    return radarData.filter(c => {
+      const cycleDate = new Date(c.created_at).toISOString().split('T')[0];
       if (dateStart && cycleDate < dateStart) return false;
       if (dateEnd && cycleDate > dateEnd) return false;
-      if (selectedFilial !== 'ALL' && c.filialOrigem !== selectedFilial) return false;
-      if (pendencyFilter !== 'ALL' && c.statusGeral !== pendencyFilter) return false;
+      if (selectedFilial !== 'ALL' && c.origem_filial !== selectedFilial) return false;
+      if (pendencyFilter !== 'ALL' && c.tipo_pendencia !== pendencyFilter) return false;
       
       if (searchTerm) {
         const s = searchTerm.toLowerCase();
-        return c.id.toLowerCase().includes(s) || c.motorista.toLowerCase().includes(s);
+        return c.id.toLowerCase().includes(s) || c.motorista.toLowerCase().includes(s) || c.origem_filial.toLowerCase().includes(s);
       }
       return true;
     });
-  }, [allCycles, dateStart, dateEnd, selectedFilial, pendencyFilter, searchTerm]);
+  }, [radarData, dateStart, dateEnd, selectedFilial, pendencyFilter, searchTerm]);
 
-  const statsFiliais = useMemo(() => AnalysisService.getFilialStats(filteredCycles), [filteredCycles]);
-  const generalOpStatus = useMemo(() => AnalysisService.getGeneralOperationalStatus(filteredCycles), [filteredCycles]);
+  const statsFiliais = useMemo(() => AnalysisService.getFilialStats(filteredData), [filteredData]);
+  const generalOpStatus = useMemo(() => AnalysisService.getGeneralOperationalStatus(filteredData), [filteredData]);
 
   const kpis = useMemo(() => {
-    const total = filteredCycles.length;
-    const pending = filteredCycles.filter(c => c.statusGeral !== 'OK');
-    const concluidas = total - pending.length;
-    const rate = total > 0 ? (concluidas / total) * 100 : 100;
-    const avgAging = pending.length > 0 ? pending.reduce((a, b) => a + b.agingHours, 0) / pending.length : 0;
-    const maxAging = pending.length > 0 ? Math.max(...pending.map(p => p.agingHours)) : 0;
+    const total = filteredData.length;
+    const pendentesList = filteredData.filter(c => c.pendente);
+    const pendentes = pendentesList.length;
+    const concluidas = total - pendentes;
     
-    return {
-      total,
-      pendingCount: pending.length,
-      concluidasRate: rate.toFixed(1),
-      avgAging: Math.round(avgAging),
-      maxAgingHours: maxAging,
-      maxAgingDays: Math.floor(maxAging / 24),
-      pOrigem: pending.filter(p => p.statusGeral === 'PEND_ORIGEM').length,
-      pDestino: pending.filter(p => p.statusGeral === 'PEND_DESTINO').length,
-      pDivergencia: pending.filter(p => p.statusGeral === 'PEND_DIVERGENCIA').length,
-    };
-  }, [filteredCycles]);
+    const pOrigem = pendentesList.filter(p => p.tipo_pendencia === 'ORIGEM').length;
+    const pDestino = pendentesList.filter(p => p.tipo_pendencia === 'DESTINO').length;
+    const pDivergencia = pendentesList.filter(p => p.tipo_pendencia === 'DIVERGENCIA').length;
 
-  const filiaisList = useMemo(() => Array.from(new Set(allCycles.map(c => c.filialOrigem))).sort(), [allCycles]);
+    const avgAging = pendentes > 0 ? Math.round(pendentesList.reduce((a, b) => a + b.aging_horas, 0) / pendentes) : 0;
+    const maxAging = pendentes > 0 ? Math.max(...pendentesList.map(p => p.aging_horas)) : 0;
 
-  const getStatusBadge = (status: TransferPendencyType) => {
+    return { total, concluidas, pendentes, pOrigem, pDestino, pDivergencia, avgAging, maxAging };
+  }, [filteredData]);
+
+  const filiaisList = useMemo(() => Array.from(new Set(radarData.map(c => c.origem_filial))).sort(), [radarData]);
+
+  const getStatusBadge = (tipo: TransferPendencyType) => {
     const styles = {
-      'PEND_DIVERGENCIA': 'bg-red-100 text-red-700 border-red-200',
-      'PEND_DESTINO': 'bg-orange-100 text-orange-700 border-orange-200',
-      'PEND_ORIGEM': 'bg-yellow-100 text-yellow-700 border-yellow-200',
+      'DIVERGENCIA': 'bg-red-100 text-red-700 border-red-200',
+      'DESTINO': 'bg-orange-100 text-orange-700 border-orange-200',
+      'ORIGEM': 'bg-yellow-100 text-yellow-700 border-yellow-200',
       'OK': 'bg-green-100 text-green-700 border-green-200'
     };
-    const labels = { 'PEND_DIVERGENCIA': 'Divergência', 'PEND_DESTINO': 'Aguard. Descarga', 'PEND_ORIGEM': 'Aguard. Origem', 'OK': 'Concluída' };
-    return <span className={`${styles[status]} px-2 py-0.5 rounded text-[10px] font-black uppercase border`}>{labels[status]}</span>;
-  };
-
-  const getPriorityBadge = (p: string) => {
-    if (p === 'ALTA') return <span className="text-red-600 font-black tracking-tighter flex items-center gap-1"><AlertCircle size={10}/> ALTA</span>;
-    if (p === 'MEDIA') return <span className="text-orange-500 font-bold tracking-tighter">MÉDIA</span>;
-    return <span className="text-gray-400 font-medium tracking-tighter">BAIXA</span>;
+    const labels = { 'DIVERGENCIA': 'Divergência', 'DESTINO': 'Pend. Destino', 'ORIGEM': 'Pend. Origem', 'OK': 'Concluído' };
+    return <span className={`${styles[tipo]} px-2 py-0.5 rounded text-[10px] font-black uppercase border`}>{labels[tipo]}</span>;
   };
 
   return (
     <div className="space-y-8 animate-fadeIn pb-20">
-      {/* Barra de Status Operacional Geral */}
-      <div className={`w-full py-4 px-8 rounded-3xl shadow-xl ${generalOpStatus.color} text-white flex flex-col md:flex-row justify-between items-center gap-4 transition-all duration-300`}>
+      {/* Status Bar */}
+      <div className={`w-full py-4 px-8 rounded-3xl shadow-xl ${generalOpStatus.color} text-white flex justify-between items-center`}>
         <div className="flex items-center gap-4">
-          <Activity size={32} className="opacity-80 animate-pulse" />
+          <Activity size={32} className="animate-pulse opacity-80" />
           <div>
-            <p className="text-[10px] font-black uppercase tracking-[0.3em] opacity-80">Rede de Transferência</p>
+            <p className="text-[10px] font-black uppercase tracking-widest opacity-80">Radar Operacional</p>
             <p className="text-2xl font-black tracking-tighter">{generalOpStatus.label}</p>
           </div>
         </div>
-        <div className="text-center md:text-right">
-           <p className="text-sm font-bold opacity-90 max-w-md">{generalOpStatus.desc}</p>
-        </div>
+        <p className="text-sm font-bold opacity-90 hidden md:block">{generalOpStatus.desc}</p>
       </div>
 
-      {/* Header & Filtros */}
-      <div className="bg-white dark:bg-slate-800 p-8 rounded-3xl shadow-soft border border-gray-100 dark:border-gray-700 space-y-8">
+      {/* Filters */}
+      <Card className="p-8 space-y-8">
         <div className="flex flex-col md:flex-row justify-between items-start md:items-center gap-4">
-          <div className="flex items-center gap-3">
-             <div className="p-3 bg-marsala-50 dark:bg-marsala-900/20 text-marsala-600 rounded-2xl">
-                <Filter size={24} />
-             </div>
-             <div>
-                <h2 className="text-2xl font-black text-gray-900 dark:text-white tracking-tighter">Painel de Controle</h2>
-                <p className="text-xs text-gray-400 font-bold uppercase tracking-widest">Filtros Operacionais</p>
-             </div>
-          </div>
+          <h2 className="text-2xl font-black text-gray-900 dark:text-white tracking-tighter">Filtros Operacionais</h2>
           <button 
-            onClick={() => PDFService.generateRadarFullPDF(filteredCycles, statsFiliais, dateStart, dateEnd)}
-            className="flex items-center gap-2 px-8 py-4 bg-gray-900 dark:bg-slate-700 text-white rounded-2xl font-bold shadow-2xl hover:bg-black transition-all transform hover:scale-[1.02]"
+            onClick={() => PDFService.generateRadarFullPDF(filteredData, statsFiliais, dateStart, dateEnd)}
+            className="flex items-center gap-2 px-8 py-4 bg-gray-900 dark:bg-slate-700 text-white rounded-2xl font-bold shadow-2xl hover:bg-black transition-all"
           >
-            <Download size={20} />
-            Exportar Relatório PDF
+            <Download size={20} /> Exportar PDF Completo
           </button>
         </div>
 
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6">
           <div className="space-y-2">
-            <label className="text-[10px] font-black uppercase text-gray-400 tracking-widest">Período de Análise</label>
+            <label className="text-[10px] font-black uppercase text-gray-400">Período de Criação</label>
             <div className="flex items-center gap-2 bg-gray-50 dark:bg-slate-900 p-3 rounded-xl border border-gray-100 dark:border-gray-700">
-              <input type="date" value={dateStart} onChange={e => setDateStart(e.target.value)} className="bg-transparent border-none text-xs font-bold focus:ring-0 dark:text-white w-full" />
-              <span className="text-gray-300">➜</span>
-              <input type="date" value={dateEnd} onChange={e => setDateEnd(e.target.value)} className="bg-transparent border-none text-xs font-bold focus:ring-0 dark:text-white w-full" />
+              <input type="date" value={dateStart} onChange={e => setDateStart(e.target.value)} className="bg-transparent border-none text-xs font-bold w-full dark:text-white" />
+              <input type="date" value={dateEnd} onChange={e => setDateEnd(e.target.value)} className="bg-transparent border-none text-xs font-bold w-full dark:text-white" />
             </div>
           </div>
           <div className="space-y-2">
-            <label className="text-[10px] font-black uppercase text-gray-400 tracking-widest">Filial de Origem</label>
-            <select value={selectedFilial} onChange={e => setSelectedFilial(e.target.value)} className="w-full bg-gray-50 dark:bg-slate-900 p-3 rounded-xl border border-gray-100 dark:border-gray-700 text-xs font-bold dark:text-white appearance-none">
-              <option value="ALL">Todas as Filiais</option>
+            <label className="text-[10px] font-black uppercase text-gray-400">Filial Origem</label>
+            <select value={selectedFilial} onChange={e => setSelectedFilial(e.target.value)} className="w-full bg-gray-50 dark:bg-slate-900 p-3 rounded-xl border border-gray-100 dark:border-gray-700 text-xs font-bold dark:text-white">
+              <option value="ALL">Todas</option>
               {filiaisList.map(f => <option key={f} value={f}>{f}</option>)}
             </select>
           </div>
           <div className="space-y-2">
-            <label className="text-[10px] font-black uppercase text-gray-400 tracking-widest">Status da Pendência</label>
-            <select value={pendencyFilter} onChange={e => setPendencyFilter(e.target.value as any)} className="w-full bg-gray-50 dark:bg-slate-900 p-3 rounded-xl border border-gray-100 dark:border-gray-700 text-xs font-bold dark:text-white appearance-none">
-              <option value="ALL">Todos os Ciclos</option>
-              <option value="PEND_DIVERGENCIA">Divergências</option>
-              <option value="PEND_DESTINO">Aguardando Descarga</option>
-              <option value="PEND_ORIGEM">Aguardando Origem</option>
-              <option value="OK">Concluídos</option>
+            <label className="text-[10px] font-black uppercase text-gray-400">Tipo de Pendência</label>
+            <select value={pendencyFilter} onChange={e => setPendencyFilter(e.target.value as any)} className="w-full bg-gray-50 dark:bg-slate-900 p-3 rounded-xl border border-gray-100 dark:border-gray-700 text-xs font-bold dark:text-white">
+              <option value="ALL">Todas</option>
+              <option value="DIVERGENCIA">Divergências</option>
+              <option value="ORIGEM">Pend. Origem</option>
+              <option value="DESTINO">Pend. Destino</option>
+              <option value="OK">Concluídas</option>
             </select>
           </div>
           <div className="space-y-2">
-            <label className="text-[10px] font-black uppercase text-gray-400 tracking-widest">Filtro Nominal</label>
+            <label className="text-[10px] font-black uppercase text-gray-400">Busca Rápida</label>
             <div className="relative">
               <Search size={16} className="absolute left-4 top-3.5 text-gray-400" />
               <input type="text" placeholder="Romaneio ou Motorista..." value={searchTerm} onChange={e => setSearchTerm(e.target.value)} className="pl-12 w-full bg-gray-50 dark:bg-slate-900 p-3 rounded-xl border border-gray-100 dark:border-gray-700 text-xs font-bold dark:text-white" />
             </div>
           </div>
         </div>
+      </Card>
+
+      {/* KPI Cards */}
+      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 xl:grid-cols-8 gap-4">
+        <KPICard title="Total Transfer." value={kpis.total} icon={<FileSpreadsheet />} />
+        <KPICard title="Concluídas" value={kpis.concluidas} icon={<CheckCircle2 />} />
+        <KPICard title="Pendentes" value={kpis.pendentes} icon={<Clock />} />
+        <KPICard title="Pend. Origem" value={kpis.pOrigem} icon={<TrendingDown />} />
+        <KPICard title="Pend. Destino" value={kpis.pDestino} icon={<TrendingDown className="rotate-180" />} />
+        <KPICard title="Divergências" value={kpis.pDivergencia} icon={<AlertTriangle />} />
+        <KPICard title="Aging Médio" value={`${kpis.avgAging}h`} icon={<Clock />} />
+        <KPICard title="Maior Aging" value={`${kpis.maxAging}h`} icon={<Clock />} />
       </div>
 
-      {/* KPIs — Visão do Resumo Executivo */}
-      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-6 gap-6">
-        <KPICard title="Transferências" value={kpis.total} icon={<FileSpreadsheet />} subtext="Total ciclos" />
-        <KPICard title="% Concluídas" value={`${kpis.concluidasRate}%`} icon={<CheckCircle2 />} trend={{ value: 0, direction: 'stable' }} />
-        <KPICard title="Total Pendentes" value={kpis.pendingCount} icon={<Clock />} subtext="Ciclos abertos" />
-        <KPICard title="Pendências" value={kpis.pOrigem + kpis.pDestino} icon={<TrendingDown />} subtext="Origem + Destino" />
-        <KPICard title="Divergências" value={kpis.pDivergencia} icon={<AlertTriangle />} subtext="Prioridade Máxima" />
-        <KPICard title="Aging Médio" value={`${kpis.avgAging}h`} icon={<Clock />} subtext="Tempo médio" />
-      </div>
-
-      {/* Tabela "Por Filial (Origem)" */}
-      <Card title="Análise de Saúde por Unidade (Origem)" subtitle="Monitoramento da eficiência de carregamento e divergências por filial">
+      {/* Table Filiais */}
+      <Card title="Pendentes por Origem (Filial)" subtitle="Agrupamento de pendências por unidade de carregamento">
         <div className="overflow-x-auto">
           <table className="w-full text-left border-collapse">
             <thead className="bg-gray-900 text-[10px] font-black uppercase text-gray-400">
               <tr>
                 <th className="p-4">Filial Origem</th>
-                <th className="p-4 text-center">Transfer.</th>
-                <th className="p-4 text-center">Concl.</th>
-                <th className="p-4 text-center">Pend. Total</th>
-                <th className="p-4 text-center">P. Origem</th>
-                <th className="p-4 text-center">P. Destino</th>
-                <th className="p-4 text-center">P. Diverg.</th>
-                <th className="p-4 text-center">Saúde</th>
-                <th className="p-4 text-right">Status</th>
+                <th className="p-4 text-center">Total Pendentes</th>
+                <th className="p-4 text-center">Origem</th>
+                <th className="p-4 text-center">Destino</th>
+                <th className="p-4 text-center">Diverg.</th>
+                <th className="p-4 text-center">Aging Médio</th>
+                <th className="p-4 text-right">Maior Aging</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-gray-100 dark:divide-gray-700 text-xs font-bold">
-              {statsFiliais.length === 0 ? (
-                <tr><td colSpan={9} className="p-12 text-center text-gray-400 italic">Sem dados para as filiais selecionadas.</td></tr>
-              ) : (
-                statsFiliais.map(s => (
-                  <tr key={s.filial} className="hover:bg-gray-50 dark:hover:bg-gray-700/30 transition-colors">
-                    <td className="p-4 text-gray-900 dark:text-white flex items-center gap-2">
-                       <MapPin size={14} className="text-marsala-400" />
-                       {s.filial}
-                    </td>
-                    <td className="p-4 text-center">{s.total}</td>
-                    <td className="p-4 text-center text-green-600">{s.concluidas}</td>
-                    <td className="p-4 text-center text-gray-500">{s.pendentes}</td>
-                    <td className="p-4 text-center text-yellow-600">{s.pOrigem}</td>
-                    <td className="p-4 text-center text-orange-600">{s.pDestino}</td>
-                    <td className="p-4 text-center text-red-600">{s.pDivergencia}</td>
-                    <td className="p-4 text-center">
-                       <div className="flex flex-col items-center">
-                          <span className={`text-[10px] font-black ${s.saude > 80 ? 'text-green-600' : s.saude > 60 ? 'text-yellow-600' : 'text-red-600'}`}>
-                             {s.saude} pts
-                          </span>
-                          <div className="w-16 bg-gray-100 dark:bg-gray-700 h-1 rounded-full mt-1 overflow-hidden">
-                             <div className={`h-full ${s.saude > 80 ? 'bg-green-500' : s.saude > 60 ? 'bg-yellow-500' : 'bg-red-500'}`} style={{ width: `${s.saude}%` }} />
-                          </div>
-                       </div>
-                    </td>
-                    <td className="p-4 text-right">
-                      <span className={`px-2 py-1 rounded-lg text-[9px] font-black tracking-widest border ${s.status === 'ESTÁVEL' ? 'bg-green-50 text-green-700 border-green-100' : s.status === 'ATENÇÃO' ? 'bg-yellow-50 text-yellow-700 border-yellow-100' : 'bg-red-50 text-red-700 border-red-100'}`}>
-                        {s.status}
-                      </span>
-                    </td>
-                  </tr>
-                ))
-              )}
+              {statsFiliais.map(s => (
+                <tr key={s.filial} className="hover:bg-gray-50 dark:hover:bg-gray-700/30">
+                  <td className="p-4 text-gray-900 dark:text-white flex items-center gap-2"><MapPin size={12}/>{s.filial}</td>
+                  <td className="p-4 text-center text-red-600">{s.pendentes}</td>
+                  <td className="p-4 text-center">{s.pOrigem}</td>
+                  <td className="p-4 text-center">{s.pDestino}</td>
+                  <td className="p-4 text-center text-red-600">{s.pDivergencia}</td>
+                  <td className="p-4 text-center">{s.agingMedio}h</td>
+                  <td className="p-4 text-right">{s.maiorAging}h</td>
+                </tr>
+              ))}
             </tbody>
           </table>
         </div>
       </Card>
 
-      {/* Tabela "Transferências Críticas" */}
-      <Card title="Listagem de Transferências Críticas" subtitle="Monitoramento individual de ciclos com prioridade alta ou divergência ativa">
+      {/* Table Detalhe */}
+      <Card title="Transferências Pendentes (Detalhe)" subtitle="Lista analítica de ciclos em aberto">
         <div className="overflow-x-auto">
           <table className="w-full text-left border-collapse">
             <thead className="bg-gray-100 dark:bg-gray-700/50 text-[10px] font-black uppercase text-gray-400">
               <tr>
-                <th className="p-4">Prioridade</th>
-                <th className="p-4">ID / Romaneio</th>
+                <th className="p-4">ID Romaneio</th>
                 <th className="p-4">Fluxo (Origem ➜ Destino)</th>
-                <th className="p-4">Tipo Pendência</th>
-                <th className="p-4 text-center">Carga | Desc.</th>
-                <th className="p-4 text-center">Aging</th>
+                <th className="p-4">Carga</th>
+                <th className="p-4">Descarga</th>
+                <th className="p-4">Pendência</th>
+                <th className="p-4 text-right">Aging (Horas)</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-gray-100 dark:divide-gray-700 text-xs">
-              {filteredCycles.filter(c => c.statusGeral !== 'OK').sort((a,b) => {
-                const p = { 'ALTA': 3, 'MEDIA': 2, 'BAIXA': 1 };
-                // Ordenação: 1) PEND_DIVERGENCIA, 2) maior aging, 3) PEND_DESTINO, 4) PEND_ORIGEM
-                if (a.statusGeral === 'PEND_DIVERGENCIA' && b.statusGeral !== 'PEND_DIVERGENCIA') return -1;
-                if (b.statusGeral === 'PEND_DIVERGENCIA' && a.statusGeral !== 'PEND_DIVERGENCIA') return 1;
-                return b.agingHours - a.agingHours;
+              {filteredData.filter(c => c.pendente).sort((a,b) => {
+                // ORDENAÇÃO: 1) Divergencia, 2) Aging desc, 3) Destino, 4) Origem
+                if (a.tipo_pendencia === 'DIVERGENCIA' && b.tipo_pendencia !== 'DIVERGENCIA') return -1;
+                if (b.tipo_pendencia === 'DIVERGENCIA' && a.tipo_pendencia !== 'DIVERGENCIA') return 1;
+                if (a.aging_horas !== b.aging_horas) return b.aging_horas - a.aging_horas;
+                if (a.tipo_pendencia === 'DESTINO' && b.tipo_pendencia !== 'DESTINO') return -1;
+                if (b.tipo_pendencia === 'DESTINO' && a.tipo_pendencia !== 'DESTINO') return 1;
+                return 0;
               }).map(c => (
-                <tr key={`${c.filialOrigem}_${c.id}`} className={`hover:bg-gray-50 dark:hover:bg-gray-700/30 transition-colors ${c.priority === 'ALTA' ? 'bg-red-50/20' : ''}`}>
-                  <td className="p-4">{getPriorityBadge(c.priority)}</td>
+                <tr key={`${c.origem_filial}_${c.id}`} className={`hover:bg-gray-50 dark:hover:bg-gray-700/30 ${c.tipo_pendencia === 'DIVERGENCIA' ? 'bg-red-50/20' : ''}`}>
                   <td className="p-4 font-mono font-black text-gray-900 dark:text-white">{c.id}</td>
                   <td className="p-4">
                     <div className="flex items-center gap-2">
-                      <span className="font-bold text-marsala-600">{c.filialOrigem}</span>
+                      <span className="font-bold text-marsala-600">{c.origem_filial}</span>
                       <ArrowRight size={10} className="text-gray-300" />
-                      <span className="font-bold text-gray-400">{c.filialDestino}</span>
+                      <span className="font-bold text-gray-400">{c.destino_filial}</span>
                     </div>
                   </td>
-                  <td className="p-4">{getStatusBadge(c.statusGeral)}</td>
                   <td className="p-4">
-                     <div className="flex items-center justify-center gap-3">
-                        <div className="flex flex-col items-center gap-1">
-                           <div className={`w-3 h-3 rounded-full ${c.carregamento?.status === 'CONFERIDO' ? 'bg-green-500' : c.carregamento?.status === 'DIVERGENTE' ? 'bg-red-600 animate-pulse' : 'bg-yellow-400'}`} />
-                           <span className="text-[8px] text-gray-400 uppercase font-black tracking-tighter">Carga</span>
-                        </div>
-                        <div className="w-4 h-[1px] bg-gray-200 mt-[-10px]" />
-                        <div className="flex flex-col items-center gap-1">
-                           <div className={`w-3 h-3 rounded-full ${c.descarga?.status === 'CONFERIDO' ? 'bg-green-500' : c.descarga?.status === 'DIVERGENTE' ? 'bg-red-600 animate-pulse' : c.descarga ? 'bg-yellow-400' : 'bg-gray-200'}`} />
-                           <span className="text-[8px] text-gray-400 uppercase font-black tracking-tighter">Desc</span>
-                        </div>
-                     </div>
+                     <span className={`px-2 py-0.5 rounded text-[9px] font-bold ${c.carga_status === 'CONFERIDO' ? 'bg-green-100 text-green-700' : 'bg-yellow-100 text-yellow-700'}`}>{c.carga_status}</span>
                   </td>
-                  <td className="p-4 text-center font-bold">
-                    <span className={c.agingHours > 48 ? 'text-red-600' : 'text-gray-700 dark:text-gray-300'}>
-                       {c.agingHours}h 
-                       <span className="text-gray-400 text-[9px] font-medium ml-1">({Math.floor(c.agingHours/24)}d)</span>
-                    </span>
+                  <td className="p-4">
+                     <span className={`px-2 py-0.5 rounded text-[9px] font-bold ${c.descarga_status === 'CONFERIDO' ? 'bg-green-100 text-green-700' : c.descarga_status === 'AUSENTE' ? 'bg-gray-100 text-gray-500' : 'bg-yellow-100 text-yellow-700'}`}>{c.descarga_status}</span>
                   </td>
+                  <td className="p-4">{getStatusBadge(c.tipo_pendencia)}</td>
+                  <td className="p-4 text-right font-black">{c.aging_horas}h</td>
                 </tr>
               ))}
-              {filteredCycles.filter(c => c.statusGeral !== 'OK').length === 0 && (
-                <tr><td colSpan={6} className="p-16 text-center text-gray-400 italic">Parabéns! Nenhuma transferência crítica ou pendente encontrada para os filtros aplicados.</td></tr>
-              )}
             </tbody>
           </table>
         </div>
@@ -295,12 +236,5 @@ const RomaneiosTab: React.FC<RomaneiosTabProps> = ({ manifests }) => {
     </div>
   );
 };
-
-// Simple internal icon to avoid extra imports if missing
-const MapPin = ({ size, className }: { size: number, className: string }) => (
-  <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className={className}>
-    <path d="M20 10c0 6-8 12-8 12s-8-6-8-12a8 8 0 0 1 16 0Z"/><circle cx="12" cy="10" r="3"/>
-  </svg>
-);
 
 export default RomaneiosTab;

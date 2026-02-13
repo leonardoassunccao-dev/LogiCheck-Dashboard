@@ -25,192 +25,130 @@ const addFooter = (doc: jsPDF) => {
 
 export const PDFService = {
   /**
-   * NOVO: Relatório Radar Operacional Completo conforme especificação TAREFA ÚNICA
+   * NOVO: Relatório Radar Operacional Completo conforme especificações
    */
   generateRadarFullPDF: (cycles: TransferCycle[], statsFiliais: FilialOperationalStats[], dateStart: string, dateEnd: string) => {
     const doc = new jsPDF();
     const now = new Date();
-    const pending = cycles.filter(c => c.statusGeral !== 'OK');
-    const status = AnalysisService.getGeneralOperationalStatus(cycles);
+    const pendingList = cycles.filter(c => c.pendente);
+    const concluidasCount = cycles.length - pendingList.length;
+    const statusInfo = AnalysisService.getGeneralOperationalStatus(cycles);
 
-    // --- PÁGINA 1: CAPA ---
+    // --- PÁGINA 1: CAPA E RESUMO ---
     doc.setFillColor(MARSALA);
-    doc.rect(0, 0, 210, 120, 'F');
+    doc.rect(0, 0, 210, 80, 'F');
     
     doc.setTextColor(255, 255, 255);
     doc.setFont('helvetica', 'bold');
-    doc.setFontSize(32);
-    doc.text('Relatório', 20, 50);
-    doc.text('Radar Operacional', 20, 65);
+    doc.setFontSize(28);
+    doc.text('Relatório — Radar Operacional', 14, 40);
     
-    doc.setFontSize(14);
+    doc.setFontSize(12);
     doc.setFont('helvetica', 'normal');
-    doc.text('Monitoramento de Fluxo e Transferências', 20, 80);
+    doc.text(`Período: ${dateStart || 'Início'} até ${dateEnd || 'Hoje'}`, 14, 52);
+    doc.text(`Gerado em: ${formatDate(now)}`, 14, 60);
 
-    // Period Box on Cover
-    doc.setFillColor(255, 255, 255, 0.2);
-    doc.roundedRect(20, 95, 120, 15, 2, 2, 'F');
-    doc.setFontSize(10);
-    doc.text(`Período: ${dateStart || 'Início'} a ${dateEnd || 'Hoje'}`, 25, 104);
-
-    // Status Indicator on Cover
+    doc.setTextColor(BLACK);
     doc.setFontSize(16);
     doc.setFont('helvetica', 'bold');
-    doc.text(`Status Operacional: ${status.label}`, 20, 140);
-    doc.setFontSize(11);
-    doc.setFont('helvetica', 'normal');
-    doc.setTextColor(GRAY_DARK);
-    doc.text(status.desc, 20, 148);
+    doc.text('Resumo Geral do Fluxo', 14, 95);
 
-    doc.setFontSize(10);
-    doc.text(`Gerado em: ${formatDate(now)}`, 20, 270);
-    doc.text(`LogiCheck Dashboard v1.0`, 20, 275);
-
-    // --- PÁGINA 2: RESUMO EXECUTIVO ---
-    doc.addPage();
-    doc.setFont('helvetica', 'bold');
-    doc.setFontSize(18);
-    doc.setTextColor(MARSALA);
-    doc.text('01. Resumo Executivo', 14, 25);
-
-    const concluidasCount = cycles.length - pending.length;
-    const rate = cycles.length > 0 ? (concluidasCount / cycles.length) * 100 : 100;
-    const avgAging = pending.length > 0 ? pending.reduce((a,b) => a + b.agingHours, 0) / pending.length : 0;
-    const maxAging = pending.length > 0 ? Math.max(...pending.map(p => p.agingHours)) : 0;
-
-    const kpiHead = [['Métrica', 'Valor']];
-    const kpiBody = [
-      ['Total de Transferências (Ciclos)', cycles.length.toString()],
-      ['% de Conclusão', `${rate.toFixed(1)}%`],
-      ['Total Pendentes', pending.length.toString()],
-      ['Divergências Ativas', cycles.filter(c => c.statusGeral === 'PEND_DIVERGENCIA').length.toString()],
-      ['Aging Médio (Pendentes)', `${Math.round(avgAging)}h`],
-      ['Maior Aging Ativo', `${Math.floor(maxAging/24)}d ${maxAging % 24}h`]
+    const kpiData = [
+      ['Transferências Total', cycles.length.toString()],
+      ['Ciclos Concluídos', concluidasCount.toString()],
+      ['Ciclos Pendentes', pendingList.length.toString()],
+      ['Pendência Origem', pendingList.filter(p => p.tipo_pendencia === 'ORIGEM').length.toString()],
+      ['Pendência Destino', pendingList.filter(p => p.tipo_pendencia === 'DESTINO').length.toString()],
+      ['Divergências Ativas', pendingList.filter(p => p.tipo_pendencia === 'DIVERGENCIA').length.toString()],
+      ['Aging Médio (Pendentes)', `${Math.round(pendingList.reduce((a, b) => a + b.aging_horas, 0) / (pendingList.length || 1))}h`],
+      ['Maior Aging Ativo', `${pendingList.length > 0 ? Math.max(...pendingList.map(p => p.aging_horas)) : 0}h`]
     ];
 
     autoTable(doc, {
-      startY: 35,
-      head: kpiHead,
-      body: kpiBody,
+      startY: 100,
+      head: [['Indicador Operacional', 'Valor']],
+      body: kpiData,
       theme: 'striped',
       headStyles: { fillColor: [50, 50, 50] },
       styles: { fontSize: 11, cellPadding: 5 },
       columnStyles: { 0: { fontStyle: 'bold', width: 100 }, 1: { halign: 'right' } }
     });
 
-    // Breakdown by Type
-    const typeCount = {
-      'Divergência': cycles.filter(c => c.statusGeral === 'PEND_DIVERGENCIA').length,
-      'Aguard. Descarga': cycles.filter(c => c.statusGeral === 'PEND_DESTINO').length,
-      'Aguard. Origem': cycles.filter(c => c.statusGeral === 'PEND_ORIGEM').length
-    };
-
-    autoTable(doc, {
-      startY: (doc as any).lastAutoTable.finalY + 15,
-      head: [['Tipo de Pendência', 'Quantidade']],
-      body: Object.entries(typeCount).map(([k,v]) => [k, v.toString()]),
-      theme: 'grid',
-      headStyles: { fillColor: [80, 80, 80] },
-      styles: { halign: 'center' }
-    });
-
-    // --- PÁGINA 3+: ANÁLISE POR FILIAL ---
+    // --- PÁGINA 2: PENDENTES POR FILIAL ---
     doc.addPage();
-    doc.setFontSize(18);
+    doc.setFontSize(16);
+    doc.setFont('helvetica', 'bold');
     doc.setTextColor(MARSALA);
-    doc.text('02. Análise por Filial (Origem)', 14, 25);
+    doc.text('Pendentes por Origem (Filial)', 14, 25);
 
     const filialBody = statsFiliais.map(s => [
       s.filial,
-      s.total.toString(),
-      s.concluidas.toString(),
       s.pendentes.toString(),
+      s.pOrigem.toString(),
+      s.pDestino.toString(),
       s.pDivergencia.toString(),
       `${s.agingMedio}h`,
-      `${Math.floor(s.maiorAging/24)}d`,
-      s.saude.toString(),
-      s.status
+      `${s.maiorAging}h`
     ]);
 
     autoTable(doc, {
-      startY: 35,
-      head: [['Filial', 'Total', 'Concl.', 'Pend.', 'Div.', 'Aging M.', 'Maior A.', 'Saúde', 'Status']],
+      startY: 32,
+      head: [['Filial Origem', 'Pend. Total', 'Origem', 'Destino', 'Diverg.', 'Aging Méd.', 'Maior A.']],
       body: filialBody,
-      theme: 'striped',
+      theme: 'grid',
       headStyles: { fillColor: MARSALA },
-      styles: { fontSize: 8, halign: 'center' },
-      columnStyles: { 0: { halign: 'left', fontStyle: 'bold' } },
-      didParseCell: (data) => {
-        if (data.column.index === 8) {
-          const val = data.cell.text[0];
-          if (val === 'CRÍTICO') data.cell.styles.textColor = [200, 0, 0];
-          if (val === 'ATENÇÃO') data.cell.styles.textColor = [150, 100, 0];
-        }
-      }
+      styles: { fontSize: 9, halign: 'center' },
+      columnStyles: { 0: { halign: 'left', fontStyle: 'bold' } }
     });
 
-    // --- PÁGINA FINAL: TRANSFERÊNCIAS CRÍTICAS ---
+    // --- PÁGINA 3+: DETALHAMENTO ANALÍTICO ---
     doc.addPage();
-    doc.setFontSize(18);
+    doc.setFontSize(16);
+    doc.setFont('helvetica', 'bold');
     doc.setTextColor(MARSALA);
-    doc.text('03. Listagem de Transferências Críticas', 14, 25);
-    doc.setFontSize(10);
-    doc.setTextColor(GRAY_DARK);
-    doc.text('Ordenado por nível de prioridade e tempo de abertura.', 14, 32);
+    doc.text('Transferências Pendentes (Detalhe)', 14, 25);
 
-    const criticalCycles = pending.sort((a,b) => {
-      const p = { 'ALTA': 3, 'MEDIA': 2, 'BAIXA': 1 };
-      return p[b.priority] - p[a.priority] || b.agingHours - a.agingHours;
+    const sortedPending = pendingList.sort((a,b) => {
+      if (a.tipo_pendencia === 'DIVERGENCIA' && b.tipo_pendencia !== 'DIVERGENCIA') return -1;
+      if (b.tipo_pendencia === 'DIVERGENCIA' && a.tipo_pendencia !== 'DIVERGENCIA') return 1;
+      if (a.aging_horas !== b.aging_horas) return b.aging_horas - a.aging_horas;
+      return 0;
     });
 
-    const cycleBody = criticalCycles.map(c => [
-      c.priority,
+    const detailedBody = sortedPending.map(c => [
       c.id,
-      `${c.filialOrigem} -> ${c.filialDestino}`,
-      c.statusGeral.replace('PEND_', ''),
-      c.agingHours.toString() + 'h',
-      c.motorista.substring(0, 20)
+      `${c.origem_filial} > ${c.destino_filial}`,
+      c.carga_status,
+      c.descarga_status,
+      c.tipo_pendencia,
+      `${c.aging_horas}h`
     ]);
 
     autoTable(doc, {
-      startY: 38,
-      head: [['Prioridade', 'Romaneio', 'Fluxo', 'Status', 'Aging', 'Motorista']],
-      body: cycleBody,
-      theme: 'grid',
+      startY: 32,
+      head: [['ID Romaneio', 'Fluxo', 'Carga', 'Descarga', 'Pendência', 'Aging']],
+      body: detailedBody,
+      theme: 'striped',
       headStyles: { fillColor: BLACK },
-      styles: { fontSize: 8, cellPadding: 3 },
+      styles: { fontSize: 8 },
       didParseCell: (data) => {
-        if (data.section === 'body' && data.column.index === 0 && data.cell.text[0] === 'ALTA') {
-           data.cell.styles.fillColor = [255, 235, 235];
-           data.cell.styles.textColor = [150, 0, 0];
-           data.cell.styles.fontStyle = 'bold';
+        if (data.column.index === 4 && data.cell.text[0] === 'DIVERGENCIA') {
+          data.cell.styles.textColor = [200, 0, 0];
+          data.cell.styles.fontStyle = 'bold';
         }
       }
     });
 
     addFooter(doc);
-    doc.save(`Radar_Operacional_${dateStart || 'total'}_${dateEnd || 'total'}.pdf`);
+    doc.save(`Radar_Operacional_${dateStart || 'Início'}_${dateEnd || 'Hoje'}.pdf`);
   },
 
-  /** 
-   * Legados e auxiliares mantidos conforme App 
-   */
   generateDashboardPDF: (data: ETrackRecord[]) => {
     const doc = new jsPDF();
     doc.setFontSize(18);
     doc.text('LogiCheck Dashboard - Resumo', 14, 20);
-    const body = data.map(d => [
-      new Date(d.conferenciaData).toLocaleDateString(),
-      d.motorista,
-      d.veiculo,
-      d.nfColetadas,
-      d.filial
-    ]);
-    autoTable(doc, {
-      startY: 30,
-      head: [['Data', 'Motorista', 'Veículo', 'NFs', 'Filial']],
-      body
-    });
+    const body = data.map(d => [new Date(d.conferenciaData).toLocaleDateString(), d.motorista, d.veiculo, d.nfColetadas, d.filial]);
+    autoTable(doc, { startY: 30, head: [['Data', 'Motorista', 'Veículo', 'NFs', 'Filial']], body });
     doc.save('LogiCheck_Dashboard.pdf');
   },
 
@@ -218,24 +156,9 @@ export const PDFService = {
     const doc = new jsPDF();
     doc.setFontSize(18);
     doc.text('LogiCheck - Relatório de Pendências', 14, 20);
-    doc.setFontSize(10);
-    doc.text(`Filtros: ${filterText}`, 14, 28);
-    
-    const body = issues.map(i => [
-      new Date(i.timestamp).toLocaleString(),
-      i.motorista,
-      i.placa,
-      i.qtdNaoBipadas,
-      i.filial,
-      i.observacao || '-'
-    ]);
-
-    autoTable(doc, {
-      startY: 35,
-      head: [['Data/Hora', 'Motorista', 'Placa', 'Qtd NFs', 'Filial', 'Observação']],
-      body,
-      styles: { fontSize: 8 }
-    });
+    // Fixed typo: changed the non-existent property access 'i.qtd NFs' to the correct 'i.qtdNaoBipadas' from the DriverIssue interface.
+    const body = issues.map(i => [new Date(i.timestamp).toLocaleString(), i.motorista, i.placa, i.qtdNaoBipadas, i.filial, i.observacao || '-']);
+    autoTable(doc, { startY: 35, head: [['Data/Hora', 'Motorista', 'Placa', 'Qtd NFs', 'Filial', 'Observação']], body, styles: { fontSize: 8 } });
     doc.save('LogiCheck_Pendencias.pdf');
   },
 
@@ -243,12 +166,7 @@ export const PDFService = {
     const doc = new jsPDF();
     doc.setFontSize(16);
     doc.text(title, 14, 20);
-    autoTable(doc, {
-      startY: 30,
-      head,
-      body,
-      styles: { fontSize: 8 }
-    });
+    autoTable(doc, { startY: 30, head, body, styles: { fontSize: 8 } });
     doc.save(`LogiCheck_${title.replace(/\s/g, '_')}.pdf`);
   }
 };

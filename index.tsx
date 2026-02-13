@@ -1,5 +1,4 @@
-
-import React, { ErrorInfo, ReactNode } from 'react';
+import React, { Component, ErrorInfo, ReactNode } from 'react';
 import ReactDOM from 'react-dom/client';
 import App from './App';
 
@@ -12,16 +11,15 @@ interface ErrorBoundaryState {
   error: Error | null;
 }
 
-// Fixed ErrorBoundary by using React.Component and class property initialization for state.
-// This resolves TypeScript errors regarding missing 'state' and 'props' properties by providing explicit type context.
-class ErrorBoundary extends React.Component<ErrorBoundaryProps, ErrorBoundaryState> {
-  public state: ErrorBoundaryState = {
-    hasError: false,
-    error: null
-  };
-
+// Fixed ErrorBoundary by using Component from 'react' and standard generic application.
+// This resolves TypeScript errors where 'props' or 'state' might not be properly inherited.
+class ErrorBoundary extends Component<ErrorBoundaryProps, ErrorBoundaryState> {
   constructor(props: ErrorBoundaryProps) {
     super(props);
+    this.state = {
+      hasError: false,
+      error: null
+    };
   }
 
   public static getDerivedStateFromError(error: Error): ErrorBoundaryState {

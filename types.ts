@@ -19,8 +19,9 @@ export interface DriverIssue {
   observacao?: string;
 }
 
-export type ManifestStatus = 'PENDENTE' | 'CONFERIDO' | 'DIVERGENTE';
+export type ManifestStatus = 'PENDENTE' | 'CONFERIDO' | 'DIVERGENTE' | 'AUSENTE';
 export type PriorityLevel = 'ALTA' | 'MEDIA' | 'BAIXA';
+export type TransferPendencyType = 'OK' | 'ORIGEM' | 'DESTINO' | 'DIVERGENCIA';
 
 export interface OperationalManifest {
   id: string; 
@@ -41,20 +42,19 @@ export interface OperationalManifest {
   ultimoUpdate: string;
 }
 
-export type TransferPendencyType = 'PEND_ORIGEM' | 'PEND_DESTINO' | 'PEND_DIVERGENCIA' | 'OK';
-
 export interface TransferCycle {
-  id: string; // Romaneio
-  filialOrigem: string;
-  filialDestino: string;
-  dataCriacao: string;
+  id: string; // id_transferencia (romaneio)
+  origem_filial: string;
+  destino_filial: string;
+  created_at: string;
   motorista: string;
   veiculo: string;
-  carregamento?: OperationalManifest;
-  descarga?: OperationalManifest;
-  statusGeral: TransferPendencyType;
-  agingHours: number;
-  priority: PriorityLevel;
+  carga_status: ManifestStatus;
+  descarga_status: ManifestStatus;
+  divergencia_ativa: boolean;
+  tipo_pendencia: TransferPendencyType;
+  pendente: boolean;
+  aging_horas: number;
   totalNfs: number;
   totalVolume: number;
 }
@@ -69,8 +69,6 @@ export interface FilialOperationalStats {
   pDivergencia: number;
   agingMedio: number;
   maiorAging: number;
-  saude: number;
-  status: 'ESTÁVEL' | 'ATENÇÃO' | 'CRÍTICO';
 }
 
 export interface ImportBatch {
