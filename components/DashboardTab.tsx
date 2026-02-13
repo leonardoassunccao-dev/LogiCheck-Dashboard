@@ -233,7 +233,12 @@ const DashboardTab: React.FC<DashboardTabProps> = ({ data, manifests, isMeetingM
                     </div>
                     {insight.drillDown && (
                         <div className="mt-3 text-right">
-                           <span className="text-[10px] text-marsala-500 font-bold hover:underline cursor-pointer">Ver detalhe →</span>
+                           <span 
+                              onClick={() => setDrillDownType(insight.drillDown as DrillDownType)}
+                              className="text-[10px] text-marsala-500 font-bold hover:underline cursor-pointer"
+                           >
+                              Ver detalhe →
+                           </span>
                         </div>
                     )}
                   </Card>
