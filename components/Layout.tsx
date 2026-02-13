@@ -108,9 +108,12 @@ export const Layout: React.FC<LayoutProps> = ({
                </p>
             </div>
             <div className="flex items-center gap-6 text-[10px] font-bold text-gray-400 dark:text-gray-500 uppercase tracking-widest">
-               <span className="bg-gray-100 dark:bg-gray-800 px-2 py-0.5 rounded text-[9px] text-gray-500">v1.0.0</span>
+               <span className="bg-gray-100 dark:bg-gray-800 px-2 py-0.5 rounded text-[9px] text-gray-500">v1.0.1</span>
+               <div className="flex flex-col items-end">
+                 <span className="text-[8px] text-gray-400 font-black">BUILD STAMP: 2025-05-23 10:45</span>
+                 <span className="text-[7px] text-gray-300 font-mono tracking-tighter">SHA: 8f921d7_prod</span>
+               </div>
                <button className="hover:text-marsala-500 transition-colors">Suporte</button>
-               <button className="hover:text-marsala-500 transition-colors">Termos</button>
             </div>
           </div>
         </footer>

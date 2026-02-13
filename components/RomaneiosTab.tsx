@@ -29,7 +29,11 @@ const RomaneiosTab: React.FC<RomaneiosTabProps> = ({ manifests }) => {
   const [selectedFilial, setSelectedFilial] = useState('ALL');
 
   // 1. BASE ÚNICA RADARDATA
-  const allRadarData = useMemo(() => AnalysisService.getRadarData(manifests), [manifests]);
+  const allRadarData = useMemo(() => {
+    const data = AnalysisService.getRadarData(manifests);
+    console.log("RADAR NEW", data.length);
+    return data;
+  }, [manifests]);
 
   // 2. FILTRAGEM
   const filteredRadar = useMemo(() => {

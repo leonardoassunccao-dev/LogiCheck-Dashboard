@@ -11,70 +11,95 @@ interface ErrorBoundaryState {
   error: Error | null;
 }
 
-// Fixed ErrorBoundary by explicitly extending React.Component and declaring the state property
 class ErrorBoundary extends React.Component<ErrorBoundaryProps, ErrorBoundaryState> {
-  // Declare the state property explicitly to resolve "Property 'state' does not exist" errors
-  public state: ErrorBoundaryState = {
-    hasError: false,
-    error: null
-  };
-
   constructor(props: ErrorBoundaryProps) {
     super(props);
+    this.state = { hasError: false, error: null };
   }
 
-  public static getDerivedStateFromError(error: Error): ErrorBoundaryState {
+  static getDerivedStateFromError(error: Error): ErrorBoundaryState {
     return { hasError: true, error };
   }
 
-  public componentDidCatch(error: Error, errorInfo: ErrorInfo) {
-    console.error("Uncaught error:", error, errorInfo);
+  componentDidCatch(error: Error, errorInfo: ErrorInfo) {
+    console.error("Critical Runtime Error:", error, errorInfo);
   }
 
-  public render() {
-    // Accessing this.state is now correctly typed
+  render() {
     if (this.state.hasError) {
       return (
-        <div style={{ padding: '40px', fontFamily: 'sans-serif', color: '#800020', textAlign: 'center' }}>
-          <h1 style={{ fontSize: '24px', fontWeight: 'black' }}>Algo deu errado.</h1>
-          <p style={{ margin: '10px 0', opacity: 0.7 }}>A aplicação encontrou um erro inesperado e não pôde continuar.</p>
-          <pre style={{ backgroundColor: '#f9f9f9', padding: '20px', overflow: 'auto', borderRadius: '12px', textAlign: 'left', border: '1px solid #eee', fontSize: '11px' }}>
-            {this.state.error?.toString()}
-          </pre>
-          <button 
-            onClick={() => {
-              localStorage.clear();
-              window.location.reload();
-            }}
-            style={{ marginTop: '20px', padding: '12px 30px', backgroundColor: '#955251', color: 'white', border: 'none', borderRadius: '10px', cursor: 'pointer', fontWeight: 'bold' }}
-          >
-            Resetar App e Recarregar
-          </button>
+        <div style={{ padding: '40px', textAlign: 'center', fontFamily: 'sans-serif', color: '#1f2937' }}>
+          <h1 style={{ color: '#955251', marginBottom: '16px' }}>Ops! Algo deu errado.</h1>
+          <p style={{ marginBottom: '24px', color: '#4b5563' }}>
+            O sistema encontrou um erro inesperado. Tente recarregar a página ou limpar os dados locais.
+          </p>
+          <div style={{ display: 'flex', gap: '10px', justifyContent: 'center' }}>
+            <button 
+              onClick={() => window.location.reload()}
+              style={{ 
+                padding: '10px 20px', 
+                backgroundColor: '#fff', 
+                color: '#955251', 
+                border: '1px solid #955251', 
+                borderRadius: '8px', 
+                cursor: 'pointer',
+                fontWeight: 'bold' 
+              }}
+            >
+              Recarregar
+            </button>
+            <button 
+              onClick={() => { localStorage.clear(); window.location.reload(); }}
+              style={{ 
+                padding: '10px 20px', 
+                backgroundColor: '#955251', 
+                color: '#fff', 
+                border: 'none', 
+                borderRadius: '8px', 
+                cursor: 'pointer',
+                fontWeight: 'bold' 
+              }}
+            >
+              Limpar Dados (Reset)
+            </button>
+          </div>
+          {this.state.error && (
+            <pre style={{ 
+              marginTop: '20px', 
+              padding: '10px', 
+              backgroundColor: '#f3f4f6', 
+              borderRadius: '8px',
+              fontSize: '12px',
+              textAlign: 'left',
+              overflow: 'auto',
+              maxWidth: '600px',
+              marginLeft: 'auto',
+              marginRight: 'auto'
+            }}>
+              {this.state.error.toString()}
+            </pre>
+          )}
         </div>
       );
     }
-
-    // Accessing this.props is now correctly typed through React.Component inheritance
     return this.props.children;
   }
 }
 
 const rootElement = document.getElementById('root');
-if (!rootElement) {
-  throw new Error("Could not find root element to mount to");
+if (rootElement) {
+  const root = ReactDOM.createRoot(rootElement);
+  root.render(
+    <React.StrictMode>
+      <ErrorBoundary>
+        <App />
+      </ErrorBoundary>
+    </React.StrictMode>
+  );
 }
-
-const root = ReactDOM.createRoot(rootElement);
-root.render(
-  <React.StrictMode>
-    <ErrorBoundary>
-      <App />
-    </ErrorBoundary>
-  </React.StrictMode>
-);
 
 if ('serviceWorker' in navigator) {
   window.addEventListener('load', () => {
-    navigator.serviceWorker.register('/service-worker.js').catch(err => console.log('SW fail: ', err));
+    navigator.serviceWorker.register('/service-worker.js').catch(() => {});
   });
 }
