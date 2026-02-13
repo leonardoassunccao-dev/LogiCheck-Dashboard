@@ -1,21 +1,81 @@
-import { ETrackRecord, OperationalInsight, LogiCheckScore, OperationalManifest } from '../types';
+import { ETrackRecord, OperationalInsight, LogiCheckScore, OperationalManifest, TransferCycle, TransferPendencyType } from '../types';
 
 export const AnalysisService = {
   /**
-   * CÁLCULO DE SAÚDE OPERACIONAL (Índice LogiCheck)
-   * Fórmula: (Pilar 1 + Pilar 2 + Pilar 3) / 3
-   * 
-   * Pilar 1: Equilíbrio de Conferência (0-100) -> Baseado no desvio padrão de produtividade entre conferentes.
-   * Pilar 2: Estabilidade de Volume (0-100) -> Baseado na regularidade do volume diário (CV - Coeficiente de Variação).
-   * Pilar 3: Controle de Pendências (0-100) -> Baseado na quantidade e aging (tempo) dos romaneios pendentes.
+   * Agrupa manifestos em Ciclos de Transferência
    */
+  getTransferCycles: (manifests: OperationalManifest[]): TransferCycle[] => {
+    const cyclesMap = new Map<string, TransferCycle>();
+    const now = new Date();
+
+    manifests.forEach(m => {
+      // Identificador único do ciclo: Filial Origem + Romaneio
+      // (Em transferências, o romaneio costuma ser o mesmo para carregar e descarregar)
+      const cycleKey = `${m.filialOrigem}_${m.romaneio}`;
+      
+      if (!cyclesMap.has(cycleKey)) {
+        cyclesMap.set(cycleKey, {
+          id: m.romaneio,
+          filialOrigem: m.filialOrigem,
+          filialDestino: m.filialDestino,
+          dataCriacao: m.dataIncRomaneio,
+          motorista: m.motorista,
+          veiculo: m.veiculo,
+          statusGeral: 'CONCLUIDA',
+          agingHours: 0,
+          totalNfs: m.totalNfs,
+          totalVolume: m.totalVolume
+        });
+      }
+
+      const cycle = cyclesMap.get(cycleKey)!;
+      const tipo = (m.tipo || '').toUpperCase();
+
+      if (tipo.includes('CARREGAMENTO') || tipo.includes('SAIDA') || tipo.includes('SAÍDA')) {
+        cycle.carregamento = m;
+      } else if (tipo.includes('DESCARGA') || tipo.includes('ENTRADA') || tipo.includes('CHEGADA')) {
+        cycle.descarga = m;
+      } else {
+        // Se não for explicitamente carga/descarga, tratamos como carregamento base se estiver vazio
+        if (!cycle.carregamento) cycle.carregamento = m;
+      }
+    });
+
+    // Classificação e Aging
+    return Array.from(cyclesMap.values()).map(cycle => {
+      const start = new Date(cycle.dataCriacao);
+      cycle.agingHours = Math.floor((now.getTime() - start.getTime()) / (1000 * 60 * 60));
+
+      let status: TransferPendencyType = 'CONCLUIDA';
+
+      const car = cycle.carregamento;
+      const des = cycle.descarga;
+
+      // 1. DIVERGENCIA (Prioridade 1)
+      const hasDivergence = (car?.status === 'DIVERGENTE') || (des?.status === 'DIVERGENTE');
+      
+      // 2. DESTINO (Prioridade 2)
+      // Carregamento OK, mas descarga pendente ou inexistente
+      const isPendingDestino = (car?.status === 'CONFERIDO') && (!des || des.status === 'PENDENTE');
+
+      // 3. ORIGEM (Prioridade 3)
+      // Carregamento pendente ou inexistente
+      const isPendingOrigem = (!car || car.status === 'PENDENTE');
+
+      if (hasDivergence) status = 'PEND_DIVERGENCIA';
+      else if (isPendingDestino) status = 'PEND_DESTINO';
+      else if (isPendingOrigem) status = 'PEND_ORIGEM';
+
+      cycle.statusGeral = status;
+      return cycle;
+    });
+  },
+
   calculateScore: (data: ETrackRecord[], manifests: OperationalManifest[]): LogiCheckScore => {
-    // Se não há dados gerais E não há manifestos, score zero
     if (data.length === 0 && manifests.length === 0) {
         return { score: 0, label: 'Sem Dados', color: 'text-gray-400' };
     }
 
-    // --- PILAR 1: Equilíbrio de Conferência ---
     let balanceScore = 100;
     if (data.length > 0) {
         const conferenteMap: Record<string, number> = {};
@@ -28,14 +88,12 @@ export const AnalysisService = {
         if (volumes.length > 0) {
             const avg = volumes.reduce((a, b) => a + b, 0) / volumes.length;
             const variance = volumes.reduce((a, b) => a + Math.pow(b - avg, 2), 0) / volumes.length;
-            // Penaliza desvios altos. CV = 1.0 (100% variação) gera score 50. CV = 0 gera score 100.
             balanceScore = Math.max(0, Math.min(100, 100 - (Math.sqrt(variance) / (avg || 1)) * 50));
         } else {
-            balanceScore = 0; // Tem dados mas ninguém conferiu
+            balanceScore = 0;
         }
     }
 
-    // --- PILAR 2: Estabilidade de Volume ---
     let volumeStabilityScore = 100;
     if (data.length > 0) {
         const dateMap: Record<string, number> = {};
@@ -48,45 +106,29 @@ export const AnalysisService = {
             const avgVol = dailyVolumes.reduce((a, b) => a + b, 0) / dailyVolumes.length;
             const volVariance = dailyVolumes.reduce((a, b) => a + Math.pow(b - avgVol, 2), 0) / dailyVolumes.length;
             const stdDev = Math.sqrt(volVariance);
-            // Coeficiente de Variação (CV). Se variar 20% (0.2), perde 20 pontos.
             const cv = stdDev / (avgVol || 1);
             volumeStabilityScore = Math.max(0, Math.min(100, 100 - (cv * 100)));
         } else {
-            // Se só tem 1 dia de dados, consideramos estável (100) ou neutro
             volumeStabilityScore = 100; 
         }
     } else {
         volumeStabilityScore = 0;
     }
 
-    // --- PILAR 3: Controle de Pendências ---
     let pendingScore = 100;
     if (manifests.length > 0) {
-        const pending = manifests.filter(m => m.status === 'PENDENTE');
+        const pending = manifests.filter(m => m.status === 'PENDENTE' || m.status === 'DIVERGENTE');
         const count = pending.length;
         const maxAging = count > 0 ? Math.max(...pending.map(m => m.diasEmAberto)) : 0;
-        
-        // Fórmula de penalidade:
-        // - Cada pendência: -2 pontos
-        // - Cada dia de atraso do item mais velho: -5 pontos
         const penalty = (count * 2) + (maxAging * 5);
         pendingScore = Math.max(0, 100 - penalty);
     } else if (data.length > 0) {
-        // Se tem dados importados mas não tem manifestos carregados, 
-        // assumimos neutro ou ignoramos este pilar (média dos outros 2)? 
-        // Para simplificar, mantemos 100 se não houver manifesto pendente acusado.
         pendingScore = 100; 
     } else {
         pendingScore = 0;
     }
 
-    // --- CÁLCULO FINAL ---
     const finalScore = Math.round((balanceScore + volumeStabilityScore + pendingScore) / 3);
-
-    // --- CLASSIFICAÇÃO (Cores solicitadas) ---
-    // 80–100 → verde
-    // 60–79 → amarelo
-    // 0–59 → vermelho
     
     let label = '';
     let color = '';
@@ -109,7 +151,6 @@ export const AnalysisService = {
     if (data.length === 0) return [];
     const insights: OperationalInsight[] = [];
 
-    // Insight 1: Recordista de Volume
     const motoristaMap: Record<string, number> = {};
     data.forEach(d => motoristaMap[d.motorista] = (motoristaMap[d.motorista] || 0) + d.nfColetadas);
     const topMotorista = Object.entries(motoristaMap).sort((a, b) => b[1] - a[1])[0];
@@ -123,7 +164,6 @@ export const AnalysisService = {
       });
     }
 
-    // Insight 2: Pico de Operação (Data)
     const dateMap: Record<string, number> = {};
     data.forEach(d => {
       const date = new Date(d.conferenciaData).toLocaleDateString('pt-BR');
@@ -140,7 +180,6 @@ export const AnalysisService = {
       });
     }
 
-    // Insight 3: Eficiência de Filiais
     const filiais = new Set(data.map(d => d.filial)).size;
     insights.push({
       type: filiais > 1 ? 'positive' : 'neutral',
@@ -168,24 +207,20 @@ export const AnalysisService = {
   },
 
   getRadarAlert: (manifests: OperationalManifest[]) => {
-    const pending = manifests.filter(m => m.status === 'PENDENTE');
+    const pending = manifests.filter(m => m.status === 'PENDENTE' || m.status === 'DIVERGENTE');
     const count = pending.length;
-    // Pega o maior aging dos pendentes
     const oldest = count > 0 ? Math.max(...pending.map(m => m.diasEmAberto)) : 0;
 
-    // Definição de Nível Base (0 a 3)
-    let severityLevel: 0 | 1 | 2 | 3 = 0; // 0: Neutral, 1: Low, 2: Med, 3: High
+    let severityLevel: 0 | 1 | 2 | 3 = 0; 
 
     if (count >= 16) severityLevel = 3;
     else if (count >= 6) severityLevel = 2;
     else if (count >= 1) severityLevel = 1;
 
-    // Promoção de Severidade por Aging (Se +4 dias, sobe um nível, limitado a 3)
     if (count > 0 && oldest >= 4) {
        severityLevel = Math.min(severityLevel + 1, 3) as any;
     }
 
-    // Definição de Textos e Estilos
     let statusText = 'Sem pendências no momento';
     let styleClass = 'border-l-4 border-l-gray-300 dark:border-l-gray-600';
     let iconColor = 'text-gray-400';
@@ -219,7 +254,6 @@ export const AnalysisService = {
   },
 
   getGeneralStatus: (score: number, radarSeverity: number) => {
-    // 1. Critical: Radar High Risk OR Low Score
     if (radarSeverity === 3 || score < 50) {
         return {
             status: 'CRÍTICO',
@@ -229,7 +263,6 @@ export const AnalysisService = {
         };
     }
     
-    // 2. Warning: Radar Medium Risk OR Medium Score
     if (radarSeverity === 2 || (score >= 50 && score <= 70)) {
         return {
             status: 'ATENÇÃO',
@@ -239,7 +272,6 @@ export const AnalysisService = {
         };
     }
 
-    // 3. Stable
     return {
         status: 'ESTÁVEL',
         color: 'bg-green-600',

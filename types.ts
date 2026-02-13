@@ -19,26 +19,47 @@ export interface DriverIssue {
   observacao?: string;
 }
 
+export type ManifestStatus = 'PENDENTE' | 'CONFERIDO' | 'DIVERGENTE';
+
 export interface OperationalManifest {
-  id: string; // UUID interno
-  key: string; // Chave única: Filial Origem + Romaneio + Tipo
+  id: string; 
+  key: string; 
   romaneio: string; 
-  tipo: string;
+  tipo: string; // Ex: CARREGAMENTO, DESCARGA, COLETA
   carga: string;
   filialOrigem: string;
   filialDestino: string;
   veiculo: string;
   motorista: string;
-  dataIncRomaneio: string; // Data de criação do romaneio (ISO)
+  dataIncRomaneio: string; 
   
-  // Dados Agregados
   totalNfs: number;
   totalVolume: number;
   totalPeso: number;
   
-  status: 'PENDENTE' | 'CONFERIDO';
+  status: ManifestStatus;
   diasEmAberto: number;
   ultimoUpdate: string;
+}
+
+export type TransferPendencyType = 'PEND_ORIGEM' | 'PEND_DESTINO' | 'PEND_DIVERGENCIA' | 'CONCLUIDA';
+
+export interface TransferCycle {
+  id: string; // Geralmente o número do Romaneio
+  filialOrigem: string;
+  filialDestino: string;
+  dataCriacao: string;
+  motorista: string;
+  veiculo: string;
+  
+  // Manifestos vinculados
+  carregamento?: OperationalManifest;
+  descarga?: OperationalManifest;
+  
+  statusGeral: TransferPendencyType;
+  agingHours: number;
+  totalNfs: number;
+  totalVolume: number;
 }
 
 export interface ImportBatch {

@@ -1,7 +1,7 @@
 import React, { useState, useRef, useMemo } from 'react';
 import * as XLSX from 'xlsx';
-import { Upload, RotateCcw, FileText, CheckCircle2, Trash2, AlertCircle, AlertTriangle } from 'lucide-react';
-import { ETrackRecord, ImportBatch, OperationalManifest } from '../types';
+import { Upload, RotateCcw, FileText, CheckCircle2, Trash2, AlertCircle, AlertTriangle, ClipboardList } from 'lucide-react';
+import { ETrackRecord, ImportBatch, OperationalManifest, ManifestStatus } from '../types';
 import { Card } from './ui/Card';
 import { StorageService, generateUUID } from '../services/storageService';
 
@@ -9,7 +9,6 @@ interface ImportDataTabProps {
   data: ETrackRecord[];
   manifests: OperationalManifest[];
   history: ImportBatch[];
-  // Atualiza dados no workspace ATUAL
   onDataUpdate: (newData: ETrackRecord[], newManifests: OperationalManifest[], newHistory: ImportBatch[]) => void;
 }
 
@@ -18,26 +17,22 @@ const ImportDataTab: React.FC<ImportDataTabProps> = ({ data, manifests, history,
   const [importMode, setImportMode] = useState<'append' | 'replace'>('append');
   const fileInputRef = useRef<HTMLInputElement>(null);
 
-  // Identify orphaned records (data without a valid import batch link)
   const orphanedCount = useMemo(() => {
     const validBatchIds = new Set(history.map(h => h.id));
     return data.filter(r => !r.importId || !validBatchIds.has(r.importId)).length;
   }, [data, history]);
 
-  // Helper para normalizar datas (Excel Serial ou String PT-BR)
   const normalizeDate = (raw: any): string | null => {
     if (raw === undefined || raw === null || raw === '') return null;
     let dateObj: Date | undefined;
     
     if (typeof raw === 'number') {
-      // Excel Serial Date
       const excelEpoch = new Date(Date.UTC(1899, 11, 30));
       const totalMilliseconds = Math.round(raw * 86400 * 1000);
       const utcDate = new Date(excelEpoch.getTime() + totalMilliseconds);
       dateObj = new Date(utcDate.getUTCFullYear(), utcDate.getUTCMonth(), utcDate.getUTCDate(), 12, 0, 0);
     } else if (typeof raw === 'string') {
       const cleanStr = raw.trim();
-      // Tentativa DD/MM/YYYY HH:mm ou DD/MM/YYYY
       const ptBrRegex = /^(\d{1,2})[\/\-](\d{1,2})[\/\-](\d{4}|\d{2})/;
       const match = cleanStr.match(ptBrRegex);
       if (match) {
@@ -60,11 +55,9 @@ const ImportDataTab: React.FC<ImportDataTabProps> = ({ data, manifests, history,
     return null;
   };
 
-  // Helper para números PT-BR (1.000,00 -> 1000.00)
   const parsePtBrFloat = (val: any): number => {
     if (typeof val === 'number') return val;
     if (typeof val === 'string') {
-      // Remove thousands separator (.), replace decimal separator (,) with (.)
       const clean = val.replace(/\./g, '').replace(',', '.');
       const float = parseFloat(clean);
       return isNaN(float) ? 0 : float;
@@ -80,7 +73,6 @@ const ImportDataTab: React.FC<ImportDataTabProps> = ({ data, manifests, history,
     let incomingRecords: ETrackRecord[] = [];
     let incomingManifests: OperationalManifest[] = []; 
     let incomingBatches: ImportBatch[] = [];
-    let hasNewManifestFormat = false;
 
     for (const file of files) {
       try {
@@ -93,25 +85,24 @@ const ImportDataTab: React.FC<ImportDataTabProps> = ({ data, manifests, history,
         const batchId = generateUUID();
         const now = new Date();
 
-        // 1. Check for Manifest Layout (New Module)
-        const isManifestFile = jsonData.length > 0 && ('Romaneio' in jsonData[0]) && ('Filial origem' in jsonData[0]);
+        // Check if it's an operational manifest file (E-track specific columns)
+        const isManifestFile = jsonData.length > 0 && 
+          (('Romaneio' in jsonData[0]) || ('Nº Romaneio' in jsonData[0])) && 
+          (('Filial origem' in jsonData[0]) || ('Filial Origem' in jsonData[0]));
 
         if (isManifestFile) {
-          hasNewManifestFormat = true;
-          // AGGREGATION LOGIC
-          // We need to group rows by Unique Key: Filial origem + Romaneio + Tipo
           const manifestMap = new Map<string, {
             lines: any[],
-            aggregatedStatus: 'PENDENTE' | 'CONFERIDO'
+            aggregatedStatus: ManifestStatus
           }>();
 
           jsonData.forEach((row: any) => {
-             const romaneio = String(row['Romaneio'] || '').trim();
-             const filialOrigem = String(row['Filial origem'] || '').trim();
+             const romaneio = String(row['Romaneio'] || row['Nº Romaneio'] || '').trim();
+             const filialOrigem = String(row['Filial origem'] || row['Filial Origem'] || '').trim();
              const tipo = String(row['Tipo'] || '').trim();
 
              if (!romaneio) return;
-
+             // Key is unique per branch, manifest number and type (Loading/Unloading)
              const key = `${filialOrigem}_${romaneio}_${tipo}`;
              
              if (!manifestMap.has(key)) {
@@ -121,60 +112,53 @@ const ImportDataTab: React.FC<ImportDataTabProps> = ({ data, manifests, history,
              const entry = manifestMap.get(key)!;
              entry.lines.push(row);
 
-             // CHECK STATUS FOR THIS LINE
-             // Regra: PENDENTE se Status != "Conferido" OU Data conf vazio OU Usuario conf vazio
-             const statusLine = String(row['Status'] || '').toUpperCase();
-             const dataConf = row['Data conferencia volume'];
-             const userConf = row['Usuario conferencia volume'];
+             const statusLine = String(row['Status'] || row['Situação'] || '').toUpperCase();
+             const dataConf = row['Data conferencia volume'] || row['Data Conf.'];
+             const userConf = row['Usuario conferencia volume'] || row['Usuário Conf.'];
              
-             const isLinePending = 
-                statusLine !== 'CONFERIDO' || 
-                !dataConf || 
-                !userConf || 
-                String(userConf).trim() === '';
-
-             if (isLinePending) {
-                entry.aggregatedStatus = 'PENDENTE';
+             // Logic: DIVERGENTE > PENDENTE > CONFERIDO
+             if (statusLine.includes('DIVERGENTE') || statusLine.includes('DIVERGÊNCIA')) {
+                entry.aggregatedStatus = 'DIVERGENTE';
+             } else if (entry.aggregatedStatus !== 'DIVERGENTE') {
+                const isLinePending = (statusLine !== 'CONFERIDO' && statusLine !== 'CONCLUÍDO') || 
+                                     !dataConf || !userConf || String(userConf).trim() === '';
+                if (isLinePending) {
+                   entry.aggregatedStatus = 'PENDENTE';
+                }
              }
           });
 
-          // Convert Map to OperationalManifest objects
           manifestMap.forEach((value, key) => {
              const firstRow = value.lines[0];
-             
-             // Agregações
              const uniqueNFs = new Set<string>();
              let totalVolume = 0;
              let totalPeso = 0;
 
              value.lines.forEach(r => {
-                if (r['NF']) uniqueNFs.add(String(r['NF']));
-                totalVolume += parsePtBrFloat(r['Volume']);
-                totalPeso += parsePtBrFloat(r['Peso']);
+                const nf = r['NF'] || r['Nº NF'];
+                if (nf) uniqueNFs.add(String(nf));
+                totalVolume += parsePtBrFloat(r['Volume'] || r['Quantidade']);
+                totalPeso += parsePtBrFloat(r['Peso'] || r['Peso Total']);
              });
 
-             const dataInc = normalizeDate(firstRow['Data Inc. romaneio']) || now.toISOString();
-             
-             // Aging Calculation
+             const dataInc = normalizeDate(firstRow['Data Inc. romaneio'] || firstRow['Data Inclusão']) || now.toISOString();
              const createdTime = new Date(dataInc).getTime();
              const daysOpen = Math.floor((now.getTime() - createdTime) / (1000 * 60 * 60 * 24));
 
              incomingManifests.push({
                 id: generateUUID(),
                 key: key,
-                romaneio: String(firstRow['Romaneio']),
+                romaneio: String(firstRow['Romaneio'] || firstRow['Nº Romaneio']),
                 tipo: String(firstRow['Tipo'] || 'N/A'),
                 carga: String(firstRow['Carga'] || 'N/A'),
-                filialOrigem: String(firstRow['Filial origem'] || 'N/A'),
-                filialDestino: String(firstRow['Filial destino'] || 'N/A'),
-                veiculo: String(firstRow['Veículo'] || firstRow['Veiculo'] || 'N/A'),
+                filialOrigem: String(firstRow['Filial origem'] || firstRow['Filial Origem'] || 'N/A'),
+                filialDestino: String(firstRow['Filial destino'] || firstRow['Filial Destino'] || 'N/A'),
+                veiculo: String(firstRow['Veículo'] || firstRow['Veiculo'] || firstRow['Placa'] || 'N/A'),
                 motorista: String(firstRow['Motorista'] || 'N/A'),
                 dataIncRomaneio: dataInc,
-                
                 totalNfs: uniqueNFs.size,
                 totalVolume: totalVolume,
                 totalPeso: totalPeso,
-                
                 status: value.aggregatedStatus,
                 diasEmAberto: daysOpen >= 0 ? daysOpen : 0,
                 ultimoUpdate: now.toISOString()
@@ -182,269 +166,226 @@ const ImportDataTab: React.FC<ImportDataTabProps> = ({ data, manifests, history,
           });
 
         } else {
-          // 2. Parse General Dashboard Data (Existing Module)
-          // Keep existing logic for backwards compatibility or other file types
+          // Standard Conferência file processing
           const mappedData: ETrackRecord[] = jsonData
             .map((row: any) => ({
               id: generateUUID(),
               importId: batchId,
-              nfColetadas: Number(row['NF Coletadas']) || 0,
-              veiculo: String(row['Veículo'] || row['Veiculo'] || 'N/A'),
+              nfColetadas: Number(row['NF Coletadas'] || row['NFs']) || 0,
+              veiculo: String(row['Veículo'] || row['Veiculo'] || row['Placa'] || 'N/A'),
               motorista: String(row['Motorista'] || 'N/A'),
               filial: String(row['Filial'] || 'N/A'),
-              conferenciaData: normalizeDate(row['Conferencia data']) || new Date().toISOString(),
-              conferidoPor: String(row['Conferido por'] || 'N/A'),
-            }))
-            .filter(r => r.motorista !== 'N/A' && (r.nfColetadas > 0 || r.conferidoPor !== 'N/A')); // Simple validation
-
-          if (mappedData.length > 0) {
-            incomingRecords = [...incomingRecords, ...mappedData];
-            incomingBatches.push({
-                id: batchId,
-                fileName: file.name,
-                timestamp: new Date().toISOString(),
-                recordCount: mappedData.length
-            });
-          }
+              conferenciaData: normalizeDate(row['Conferencia data'] || row['Data Conf.']) || new Date().toISOString(),
+              conferidoPor: String(row['Conferido por'] || row['Usuário'] || 'N/A')
+            }));
+          
+          incomingRecords.push(...mappedData);
+          incomingBatches.push({
+            id: batchId,
+            fileName: file.name,
+            timestamp: now.toISOString(),
+            recordCount: mappedData.length
+          });
         }
-      } catch (error) {
-        console.error("Error parsing file", file.name, error);
-        alert(`Erro ao ler arquivo ${file.name}: Verifique o formato.`);
+      } catch (err) {
+        console.error('File parse error:', err);
       }
     }
 
-    if (incomingRecords.length > 0 || incomingManifests.length > 0) {
-      let finalData: ETrackRecord[] = data;
-      let finalManifests: OperationalManifest[] = manifests;
-      let finalHistory: ImportBatch[] = history;
-
-      // Logic for General Data
-      if (incomingRecords.length > 0) {
-          if (importMode === 'replace') {
-              finalData = incomingRecords;
-              finalHistory = incomingBatches;
-          } else {
-              finalData = [...data, ...incomingRecords];
-              finalHistory = [...history, ...incomingBatches];
-          }
-      }
-
-      // Logic for Manifests
-      if (incomingManifests.length > 0) {
-          // MIGRATION / CLEANUP: If we detect the new format, but current data is empty or old format (missing 'filialOrigem'), wipe it first to avoid conflicts
-          const currentIsOld = manifests.length > 0 && !manifests[0].filialOrigem;
-          let baseManifests = (importMode === 'replace' || currentIsOld) ? [] : manifests;
-          
-          finalManifests = deduplicateManifests(baseManifests, incomingManifests);
-      }
-
-      onDataUpdate(finalData, finalManifests, finalHistory);
-      
-      let msg = '';
-      if (incomingRecords.length > 0) msg += `${incomingRecords.length} registros gerais. `;
-      if (incomingManifests.length > 0) msg += `${incomingManifests.length} romaneios (agregados).`;
-      
-      alert(`Importação concluída: ${msg}`);
+    if (importMode === 'replace') {
+      onDataUpdate(incomingRecords, incomingManifests, incomingBatches);
     } else {
-      alert('Nenhum registro válido encontrado. Verifique se as colunas correspondem ao padrão.');
+      onDataUpdate([...data, ...incomingRecords], [...manifests, ...incomingManifests], [...history, ...incomingBatches]);
     }
     
     setIsProcessing(false);
     if (fileInputRef.current) fileInputRef.current.value = '';
   };
 
-  // Deduplicate based on the generated Key
-  const deduplicateManifests = (existing: OperationalManifest[], incoming: OperationalManifest[]): OperationalManifest[] => {
-     const map = new Map<string, OperationalManifest>();
-     
-     // Load existing
-     existing.forEach(item => {
-        // Fallback for old data without key property
-        const key = item.key || `${item.filialOrigem}_${item.romaneio}_${item.tipo}`;
-        map.set(key, item);
-     });
-
-     // Process incoming (overwrite existing)
-     incoming.forEach(item => {
-        map.set(item.key, item);
-     });
-
-     return Array.from(map.values());
-  };
-
-  const handleDeleteOrphans = () => {
-     if (window.confirm(`Excluir ${orphanedCount} registros antigos/legados que não estão vinculados a nenhum arquivo?`)) {
-        const validBatchIds = new Set(history.map(h => h.id));
-        const newData = data.filter(record => record.importId && validBatchIds.has(record.importId));
-        onDataUpdate(newData, manifests, history);
-     }
-  };
-
-  const handleFactoryReset = () => {
-    const confirmMsg = "⚠️ ATENÇÃO: RESET DE FÁBRICA ⚠️\n\nVocê está prestes a apagar TODOS os dados do aplicativo, incluindo:\n- Todos os arquivos importados\n- Histórico de importação\n- Pendências registradas\n- Configurações locais\n\nO aplicativo será reiniciado.\n\nTem certeza absoluta?";
-
-    if (window.confirm(confirmMsg)) {
-        StorageService.clearAllData();
-        window.location.reload();
+  const handleClearAll = () => {
+    if (confirm('ATENÇÃO: Isso apagará TODOS os dados permanentemente. Continuar?')) {
+      StorageService.clearAllData();
+      window.location.reload();
     }
   };
 
-  return (
-    <div className="space-y-6 animate-fadeIn pb-20">
-      <div className="flex flex-col md:flex-row justify-between items-start md:items-center gap-4">
-        <h2 className="text-2xl font-bold text-gray-800 dark:text-white">Gerenciamento de Dados</h2>
-        
-        <div className="flex flex-wrap items-center gap-2">
-            
-            {(data.length > 0 || history.length > 0 || manifests.length > 0) && (
-                <button
-                    type="button"
-                    onClick={handleFactoryReset}
-                    className="flex items-center gap-2 px-4 py-2 bg-red-600 hover:bg-red-700 text-white rounded-md transition-all text-xs font-bold uppercase tracking-wider shadow-md hover:shadow-lg transform hover:-translate-y-0.5"
-                    title="Reset de Fábrica: Apaga tudo e recarrega"
-                >
-                    <AlertTriangle size={14} className="text-white" />
-                    Resetar Tudo
-                </button>
-            )}
+  const handleClearBatch = (id: string) => {
+    if (confirm('Excluir este lote de importação?')) {
+      const newHistory = history.filter(h => h.id !== id);
+      const newData = data.filter(d => d.importId !== id);
+      // We don't remove manifests here as they are not currently tied to history batches in this simple version
+      onDataUpdate(newData, manifests, newHistory);
+    }
+  };
 
-            <span className="text-sm bg-gray-100 dark:bg-gray-800 px-3 py-1 rounded-full text-gray-600 dark:text-gray-300">
-            Records: <strong>{data.length}</strong> | Romaneios: <strong>{manifests.length}</strong>
-            </span>
+  const handleClearOrphaned = () => {
+    const validBatchIds = new Set(history.map(h => h.id));
+    const newData = data.filter(r => r.importId && validBatchIds.has(r.importId));
+    onDataUpdate(newData, manifests, history);
+  };
+
+  return (
+    <div className="space-y-8 animate-fadeIn">
+      <div className="flex flex-col md:flex-row justify-between items-start md:items-center gap-4">
+        <div>
+           <h2 className="text-2xl font-bold text-gray-800 dark:text-white flex items-center gap-2">
+             <Upload className="text-marsala-600" />
+             Importação de Dados
+           </h2>
+           <p className="text-sm text-gray-500 dark:text-gray-400 mt-1">
+             Carregue planilhas do E-track (.xlsx ou .csv)
+           </p>
+        </div>
+        <div className="flex gap-3">
+           <button 
+             onClick={handleClearAll}
+             className="flex items-center gap-2 px-4 py-2 bg-white dark:bg-slate-800 border border-red-200 dark:border-red-900/50 text-red-600 dark:text-red-400 rounded-xl font-bold text-xs hover:bg-red-50 transition-all shadow-sm"
+           >
+             <Trash2 size={16} />
+             Limpar Tudo
+           </button>
         </div>
       </div>
 
-      <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-        {/* Card de Upload */}
-        <Card title="Importar XLS (E-track)" className="h-full">
-          
-          <div className="mb-6 bg-gray-50 dark:bg-gray-700/50 p-1 rounded-lg flex">
-             <button
-                type="button"
-                onClick={() => setImportMode('append')}
-                className={`flex-1 flex items-center justify-center gap-2 py-2 text-sm font-medium rounded-md transition-all ${importMode === 'append' ? 'bg-white dark:bg-gray-600 text-marsala-600 dark:text-white shadow-sm' : 'text-gray-500 hover:text-gray-700 dark:text-gray-400'}`}
-             >
-                <CheckCircle2 size={16} />
-                Somar ao Histórico
-             </button>
-             <button
-                type="button"
-                onClick={() => setImportMode('replace')}
-                className={`flex-1 flex items-center justify-center gap-2 py-2 text-sm font-medium rounded-md transition-all ${importMode === 'replace' ? 'bg-white dark:bg-gray-600 text-red-600 dark:text-red-300 shadow-sm' : 'text-gray-500 hover:text-gray-700 dark:text-gray-400'}`}
-             >
-                <RotateCcw size={16} />
-                Substituir Dados
-             </button>
-          </div>
+      <div className="grid grid-cols-1 lg:grid-cols-12 gap-8">
+        {/* Upload Card */}
+        <Card className="lg:col-span-4 border-t-4 border-t-marsala-600">
+           <div className="space-y-6">
+              <div 
+                onClick={() => fileInputRef.current?.click()}
+                className={`
+                  border-2 border-dashed rounded-2xl p-8 flex flex-col items-center justify-center text-center cursor-pointer transition-all
+                  ${isProcessing ? 'border-gray-200 bg-gray-50' : 'border-marsala-100 hover:border-marsala-400 hover:bg-marsala-50/30'}
+                `}
+              >
+                 <div className="w-16 h-16 bg-marsala-50 dark:bg-marsala-900/20 text-marsala-600 rounded-full flex items-center justify-center mb-4">
+                    {isProcessing ? <RotateCcw size={32} className="animate-spin" /> : <Upload size={32} />}
+                 </div>
+                 <h4 className="text-sm font-black text-gray-900 dark:text-white mb-2 uppercase tracking-widest">
+                    {isProcessing ? 'Processando...' : 'Solte sua planilha'}
+                 </h4>
+                 <p className="text-xs text-gray-400 font-medium">Suporta XLSX, XLS e CSV</p>
+                 <input 
+                    type="file" 
+                    multiple
+                    ref={fileInputRef}
+                    onChange={processFile}
+                    className="hidden"
+                    accept=".xlsx,.xls,.csv"
+                 />
+              </div>
 
-          <div className="flex flex-col items-center justify-center border-2 border-dashed border-gray-300 dark:border-gray-600 rounded-lg p-8 hover:bg-gray-50 dark:hover:bg-gray-700/50 transition-colors">
-            <Upload className="w-12 h-12 text-marsala-500 mb-4" />
-            <p className="text-center text-gray-600 dark:text-gray-300 mb-4 text-sm">
-              Suporta: <br/>
-              1. Romaneios Pendentes (Romaneio, Status, NF, etc)<br/>
-              2. Dashboard Geral (NF Coletadas, Motorista, etc)
-            </p>
-            <input
-              type="file"
-              ref={fileInputRef}
-              onChange={processFile}
-              multiple
-              accept=".xls,.xlsx"
-              className="hidden"
-            />
-            <button
-              type="button"
-              onClick={() => fileInputRef.current?.click()}
-              disabled={isProcessing}
-              className={`px-6 py-2 rounded-md font-medium transition-colors disabled:opacity-50 text-white cursor-pointer ${importMode === 'append' ? 'bg-marsala-600 hover:bg-marsala-700' : 'bg-red-600 hover:bg-red-700'}`}
-            >
-              {isProcessing ? 'Processando...' : importMode === 'append' ? 'Importar e Adicionar' : 'Importar e Substituir'}
-            </button>
-          </div>
-          <div className="mt-4 text-xs text-gray-400 text-center">
-              Modo selecionado: <strong>{importMode === 'append' ? 'Adicionar (Atualiza existentes)' : 'Substituir (Apaga anteriores)'}</strong>
-          </div>
+              <div className="bg-gray-50 dark:bg-slate-900/50 p-4 rounded-xl space-y-3">
+                 <p className="text-[10px] font-black text-gray-400 uppercase tracking-widest mb-2">Modo de Importação</p>
+                 <div className="flex gap-2">
+                    <button 
+                      onClick={() => setImportMode('append')}
+                      className={`flex-1 py-2 px-3 rounded-lg text-xs font-bold transition-all ${importMode === 'append' ? 'bg-marsala-600 text-white shadow-md' : 'bg-white dark:bg-slate-800 text-gray-400'}`}
+                    >
+                      Acumular
+                    </button>
+                    <button 
+                      onClick={() => setImportMode('replace')}
+                      className={`flex-1 py-2 px-3 rounded-lg text-xs font-bold transition-all ${importMode === 'replace' ? 'bg-marsala-600 text-white shadow-md' : 'bg-white dark:bg-slate-800 text-gray-400'}`}
+                    >
+                      Substituir
+                    </button>
+                 </div>
+              </div>
+
+              <div className="space-y-4">
+                 <div className="flex items-start gap-3 p-3 bg-blue-50 dark:bg-blue-900/10 rounded-xl">
+                    <FileText size={18} className="text-blue-600 shrink-0 mt-0.5" />
+                    <div className="text-[10px] text-blue-700 dark:text-blue-400 leading-relaxed font-medium">
+                       <strong>Dica:</strong> Para o <strong>Radar Operacional</strong>, use a exportação de Romaneios com colunas como "Tipo", "Status" e "Datas".
+                    </div>
+                 </div>
+              </div>
+           </div>
         </Card>
 
-        {/* Card de Histórico */}
-        <Card title="Histórico de Imports" className="h-full flex flex-col relative">
-          
-          <p className="text-sm text-gray-500 dark:text-gray-400 mb-4 px-1">
-            Registro dos arquivos de dados gerais.
-          </p>
+        {/* Info & History Card */}
+        <div className="lg:col-span-8 space-y-6">
+           <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+              <div className="bg-white dark:bg-slate-800 p-5 rounded-2xl border border-gray-100 dark:border-gray-700 shadow-soft flex items-center gap-4">
+                 <div className="w-12 h-12 bg-green-50 dark:bg-green-900/20 text-green-600 rounded-xl flex items-center justify-center">
+                    <CheckCircle2 size={24} />
+                 </div>
+                 <div>
+                    <p className="text-[10px] font-black text-gray-400 uppercase tracking-widest">Base de Dados</p>
+                    <p className="text-xl font-black text-gray-900 dark:text-white tracking-tighter">{data.length.toLocaleString()} <span className="text-xs font-bold text-gray-400">Linhas</span></p>
+                 </div>
+              </div>
+              <div className="bg-white dark:bg-slate-800 p-5 rounded-2xl border border-gray-100 dark:border-gray-700 shadow-soft flex items-center gap-4">
+                 <div className="w-12 h-12 bg-marsala-50 dark:bg-marsala-900/20 text-marsala-600 rounded-xl flex items-center justify-center">
+                    <ClipboardList size={24} />
+                 </div>
+                 <div>
+                    <p className="text-[10px] font-black text-gray-400 uppercase tracking-widest">Radar Ativo</p>
+                    <p className="text-xl font-black text-gray-900 dark:text-white tracking-tighter">{manifests.length.toLocaleString()} <span className="text-xs font-bold text-gray-400">Romaneios</span></p>
+                 </div>
+              </div>
+           </div>
 
-          <div className="flex-1 min-h-0 flex flex-col relative z-0">
-             <div className="flex-1 overflow-auto border border-gray-200 dark:border-gray-700 rounded-md scrollbar-hide max-h-[400px]">
-                 <table className="w-full text-left text-sm">
-                     <thead className="bg-gray-50 dark:bg-gray-800 sticky top-0">
-                         <tr>
-                             <th className="px-3 py-2 text-gray-500 dark:text-gray-400 font-medium">Arquivo</th>
-                             <th className="px-3 py-2 text-gray-500 dark:text-gray-400 font-medium text-center">Reg.</th>
-                             <th className="px-3 py-2 text-gray-500 dark:text-gray-400 font-medium text-right">Ações</th>
-                         </tr>
-                     </thead>
-                     <tbody className="divide-y divide-gray-100 dark:divide-gray-700">
-                         {history.length === 0 && orphanedCount === 0 ? (
-                             <tr><td colSpan={3} className="px-3 py-4 text-center text-gray-400 text-xs">Nenhum histórico disponível</td></tr>
-                         ) : (
-                             <>
-                             {/* Orphaned Data Row */}
-                             {orphanedCount > 0 && (
-                                <tr className="bg-orange-50 dark:bg-orange-900/10">
-                                    <td className="px-3 py-2">
-                                        <div className="flex items-center gap-2">
-                                            <AlertCircle size={14} className="text-orange-500" />
-                                            <div className="flex flex-col">
-                                                <span className="font-bold text-orange-700 dark:text-orange-300 text-xs">Dados Antigos / Sem Vínculo</span>
-                                                <span className="text-[10px] text-orange-500/70">Registros importados anteriormente</span>
-                                            </div>
-                                        </div>
-                                    </td>
-                                    <td className="px-3 py-2 text-center font-bold text-orange-700 dark:text-orange-300">
-                                        {orphanedCount}
-                                    </td>
-                                    <td className="px-3 py-2 text-right">
-                                        <button 
-                                            type="button"
-                                            onClick={handleDeleteOrphans}
-                                            className="p-1.5 text-orange-400 hover:text-red-600 hover:bg-red-50 dark:hover:bg-red-900/20 rounded transition-all"
-                                            title="Excluir dados legados"
-                                        >
-                                            <Trash2 size={16} />
-                                        </button>
-                                    </td>
-                                </tr>
-                             )}
-                             
-                             {/* Standard Batches */}
-                             {[...history].reverse().map(batch => (
-                                 <tr key={batch.id} className="group hover:bg-gray-50 dark:hover:bg-gray-700/30 transition-colors">
-                                     <td className="px-3 py-2 max-w-[150px]" title={batch.fileName}>
-                                        <div className="flex flex-col">
-                                            <div className="flex items-center gap-2 truncate">
-                                                <FileText size={12} className="text-marsala-500 flex-shrink-0" />
-                                                <span className="text-gray-700 dark:text-gray-300 font-medium truncate">{batch.fileName}</span>
-                                            </div>
-                                            <span className="text-[10px] text-gray-400 pl-5">
-                                                {new Date(batch.timestamp).toLocaleString()}
-                                            </span>
-                                        </div>
-                                     </td>
-                                     <td className="px-3 py-2 text-center font-medium text-gray-700 dark:text-gray-300">
-                                         {batch.recordCount}
-                                     </td>
-                                     <td className="px-3 py-2 text-right">
-                                         {/* Delete button removed */}
-                                     </td>
-                                 </tr>
-                             ))}
-                             </>
-                         )}
-                     </tbody>
-                 </table>
+           {orphanedCount > 0 && (
+             <div className="bg-yellow-50 dark:bg-yellow-900/10 border border-yellow-200 dark:border-yellow-900/50 p-4 rounded-2xl flex justify-between items-center animate-fadeIn">
+                <div className="flex items-center gap-3">
+                   <AlertCircle className="text-yellow-600" />
+                   <div>
+                      <p className="text-sm font-bold text-yellow-800 dark:text-yellow-400">Detectamos {orphanedCount} registros órfãos.</p>
+                      <p className="text-xs text-yellow-700 dark:text-yellow-500">Dados que não pertencem a nenhum lote de importação ativo.</p>
+                   </div>
+                </div>
+                <button 
+                  onClick={handleClearOrphaned}
+                  className="px-4 py-2 bg-yellow-600 text-white rounded-xl text-xs font-black hover:bg-yellow-700 transition-all shadow-md"
+                >
+                  Limpar Órfãos
+                </button>
              </div>
-          </div>
-        </Card>
+           )}
+
+           <Card title="Histórico de Importação" noPadding>
+              <div className="overflow-x-auto">
+                 <table className="w-full text-left border-collapse">
+                    <thead className="bg-gray-50 dark:bg-gray-700/50 text-[10px] uppercase text-gray-400 font-black">
+                       <tr>
+                          <th className="p-4">Arquivo</th>
+                          <th className="p-4">Data/Hora</th>
+                          <th className="p-4 text-center">Registros</th>
+                          <th className="p-4 text-right">Ação</th>
+                       </tr>
+                    </thead>
+                    <tbody className="divide-y divide-gray-100 dark:divide-gray-700 text-xs">
+                       {history.length === 0 ? (
+                          <tr><td colSpan={4} className="p-8 text-center text-gray-400 font-medium italic tracking-wide">Nenhuma importação realizada.</td></tr>
+                       ) : (
+                          history.map((item) => (
+                             <tr key={item.id} className="hover:bg-gray-50 dark:hover:bg-gray-700/30 transition-colors">
+                                <td className="p-4 font-bold text-gray-800 dark:text-white flex items-center gap-2">
+                                   <FileText size={14} className="text-gray-400" />
+                                   {item.fileName}
+                                </td>
+                                <td className="p-4 text-gray-500 font-medium">{new Date(item.timestamp).toLocaleString()}</td>
+                                <td className="p-4 text-center">
+                                   <span className="bg-marsala-50 dark:bg-marsala-900/20 text-marsala-600 px-2 py-0.5 rounded-full font-black tracking-tight">{item.recordCount}</span>
+                                </td>
+                                <td className="p-4 text-right">
+                                   <button 
+                                      onClick={() => handleClearBatch(item.id)}
+                                      className="p-2 text-gray-400 hover:text-red-500 transition-colors"
+                                   >
+                                      <Trash2 size={16} />
+                                   </button>
+                                </td>
+                             </tr>
+                          ))
+                       )}
+                    </tbody>
+                 </table>
+              </div>
+           </Card>
+        </div>
       </div>
     </div>
   );
